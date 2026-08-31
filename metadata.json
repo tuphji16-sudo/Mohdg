@@ -1,0 +1,10 @@
+{
+  "name": "منصة الذكاء الاصطناعي الشاملة",
+  "description": "منصة ذكاء اصطناعي احترافية متكاملة للردود والمحادثات المتقدمة وتوليد الصور والمشاهد المرئية ومقاطع الفيديو مع دعم كامل وفصيح للغة العربية.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
