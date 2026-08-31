@@ -291,7 +291,7 @@ fun ChatScreen(
                 // Send button
                 IconButton(
                     onClick = {
-                        if (inputText.isNotBlank() || attachedImage != null) {
+                        if ((inputText.isNotBlank() || attachedImage != null) && !isLoading) {
                             viewModel.sendMessage(inputText)
                             inputText = ""
                         }
@@ -300,14 +300,24 @@ fun ChatScreen(
                     modifier = Modifier
                         .size(40.dp)
                         .clip(CircleShape)
-                        .background(if (inputText.isNotBlank() || attachedImage != null) AccentBlue else SurfaceDark)
+                        .background(
+                            if ((inputText.isNotBlank() || attachedImage != null) && !isLoading) AccentBlue else SurfaceDark
+                        )
                 ) {
-                    Icon(
-                        Icons.Default.Send,
-                        contentDescription = "إرسال",
-                        tint = if (inputText.isNotBlank() || attachedImage != null) TextPrimary else TextMuted,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = AccentBlueLight,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(
+                            Icons.Default.Send,
+                            contentDescription = "إرسال",
+                            tint = if (inputText.isNotBlank() || attachedImage != null) TextPrimary else TextMuted,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
