@@ -26,12 +26,13 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Gradle
+      - name: Setup Gradle 8.9
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.9'
+          build-root-directory: 'android'
 
-      - name: Ensure Gradle Wrapper is Ready
+      - name: Setup Gradle Wrapper
         run: |
           cd android
           if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
@@ -39,14 +40,9 @@ jobs:
           fi
           chmod +x gradlew
 
-      - name: Configure Secrets
-        run: |
-          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
-            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > android/secrets.properties
-            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > android/app/secrets.properties
-          fi
-
       - name: Build Debug APK with Gradle
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           cd android
           ./gradlew assembleDebug --stacktrace --no-daemon
