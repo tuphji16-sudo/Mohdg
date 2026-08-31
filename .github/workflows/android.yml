@@ -28,14 +28,22 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.9'
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x android/gradlew
+      - name: Ensure Gradle Wrapper is Ready
+        run: |
+          cd android
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            gradle wrapper --gradle-version 8.9 --distribution-type bin
+          fi
+          chmod +x gradlew
 
-      - name: Configure Secrets (Optional)
+      - name: Configure Secrets
         run: |
           if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
-            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> android/secrets.properties
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > android/secrets.properties
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > android/app/secrets.properties
           fi
 
       - name: Build Debug APK with Gradle

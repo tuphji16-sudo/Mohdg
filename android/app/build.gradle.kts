@@ -20,6 +20,7 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        buildConfigField("String", "GEMINI_API_KEY", "\"\"")
     }
 
     buildTypes {
@@ -58,7 +59,7 @@ android {
 
 secrets {
     propertiesFileName = "secrets.properties"
-    defaultPropertiesFileName = ".env.example"
+    defaultPropertiesFileName = "local.defaults.properties"
     ignoreList.add("sdk.*")
 }
 
