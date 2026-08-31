@@ -63,6 +63,7 @@ class ChatViewModel(private val repository: GeminiRepository = GeminiRepository(
     }
 
     fun sendMessage(userText: String) {
+        if (_isLoading.value) return
         if (userText.isBlank() && _attachedImageBitmap.value == null) return
 
         val userMessage = ChatMessage(
