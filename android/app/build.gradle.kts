@@ -89,7 +89,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.8.0")
 
-    // Google Generative AI (Gemini SDK)
+    // Google Generative AI & Networking
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
 
     // Image Loading (Coil)
