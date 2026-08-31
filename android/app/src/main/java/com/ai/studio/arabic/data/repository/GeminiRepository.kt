@@ -28,9 +28,14 @@ class GeminiRepository(private val context: Context? = null) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // Available, stable Gemini models
-    private val primaryModel = "gemini-2.0-flash"
-    private val fallbackModel = "gemini-1.5-flash"
+    // Ordered sequence of verified models to try automatically
+    private val candidateModels = listOf(
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-exp",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro-latest",
+        "gemini-pro"
+    )
 
     fun getApiKey(): String {
         val customKey = context?.let { UserPreferences.getApiKey(it) }
@@ -41,14 +46,14 @@ class GeminiRepository(private val context: Context? = null) {
     }
 
     /**
-     * Executes a raw generateContent call to Gemini REST API with robust JSON parsing and model fallback.
+     * Executes a raw generateContent call to Gemini REST API with robust JSON parsing and multi-model fallback.
      */
     private suspend fun callGeminiApi(
         prompt: String,
         systemInstruction: String? = null,
         imageBitmap: Bitmap? = null,
         history: List<Pair<String, Boolean>> = emptyList(),
-        modelName: String = primaryModel
+        modelIndex: Int = 0
     ): Result<String> = withContext(Dispatchers.IO) {
         val apiKey = getApiKey()
         if (apiKey.isBlank()) {
@@ -56,6 +61,8 @@ class GeminiRepository(private val context: Context? = null) {
                 IllegalStateException("⚠️ يرجى ضبط مفتاح Gemini API من خلال أيقونة المفتاح 🔑 في أعلى الشاشة.")
             )
         }
+
+        val modelName = candidateModels.getOrElse(modelIndex) { candidateModels.first() }
 
         try {
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey"
@@ -136,7 +143,6 @@ class GeminiRepository(private val context: Context? = null) {
             val responseBody = response.body?.string() ?: ""
 
             if (!response.isSuccessful) {
-                // Parse error safely without MissingFieldException
                 var errorMessage = "HTTP ${response.code}: ${response.message}"
                 var is404ModelNotFound = false
 
@@ -148,29 +154,32 @@ class GeminiRepository(private val context: Context? = null) {
                             val status = errorJson.optString("status", "")
                             errorMessage = if (msg.isNotBlank()) msg else status
 
-                            if (response.code == 404 || status == "NOT_FOUND" || msg.contains("not found", ignoreCase = true) || msg.contains("is no longer available", ignoreCase = true)) {
+                            if (response.code == 404 || status == "NOT_FOUND" ||
+                                msg.contains("not found", ignoreCase = true) ||
+                                msg.contains("is no longer available", ignoreCase = true) ||
+                                msg.contains("not supported for generateContent", ignoreCase = true)
+                            ) {
                                 is404ModelNotFound = true
                             }
                         }
                     }
                 } catch (_: Exception) {}
 
-                // If primary model failed with 404 / not found, automatically fallback to fallbackModel
-                if (is404ModelNotFound && modelName != fallbackModel) {
+                // If model is not found or unsupported, fallback to next available model in the sequence
+                if (is404ModelNotFound && modelIndex + 1 < candidateModels.size) {
                     return@withContext callGeminiApi(
                         prompt = prompt,
                         systemInstruction = systemInstruction,
                         imageBitmap = imageBitmap,
                         history = history,
-                        modelName = fallbackModel
+                        modelIndex = modelIndex + 1
                     )
                 }
 
-                // Friendly Arabic error translation
                 val friendlyError = when (response.code) {
                     400 -> "خطأ في بنية الطلب (400): $errorMessage"
                     403 -> "⚠️ خطأ في صلاحية المفتاح (403 Permission Denied): تأكد من صحة وتفعيل مفتاح Gemini API من زر 🔑 في الأعلى."
-                    404 -> "النموذج المطلوب غير متاح حالياً ($modelName): $errorMessage"
+                    404 -> "النموذج غير متاح حالياً ($modelName): $errorMessage"
                     429 -> "تم تجاوز حد الطلبات المسموح به مؤقتاً (429 Too Many Requests). يرجى الانتظار قليلاً والمحاولة مجدداً."
                     500, 503 -> "خوادم الذكاء الاصطناعي مشغولة حالياً، يرجى المحاولة بعد لحظات."
                     else -> "فشل الاتصال بنموذج الذكاء الاصطناعي: $errorMessage"
@@ -179,7 +188,6 @@ class GeminiRepository(private val context: Context? = null) {
                 return@withContext Result.failure(Exception(friendlyError))
             }
 
-            // Parse successful response
             val jsonResponse = JSONObject(responseBody)
             val candidates = jsonResponse.optJSONArray("candidates")
             if (candidates != null && candidates.length() > 0) {

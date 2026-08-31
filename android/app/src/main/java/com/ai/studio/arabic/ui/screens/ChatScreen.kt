@@ -105,7 +105,7 @@ fun ChatScreen(
         StudioHeaderBanner(
             icon = Icons.Default.ChatBubble,
             title = "استوديو المحادثة الذكية",
-            subtitle = "Gemini 2.5 Flash مع استدلال فصيح متقدم",
+            subtitle = "Gemini 2.0 Flash مع استدلال فصيح متقدم",
             trailingAction = {
                 IconButton(
                     onClick = { viewModel.clearChat() },

@@ -86,7 +86,7 @@ fun MainScreen() {
                                 color = TextPrimary
                             )
                             Text(
-                                text = "Gemini 2.5 • Imagen 3 • Veo 3.1",
+                                text = "Gemini 2.0 • Imagen 3 • Veo 3.1",
                                 fontSize = 10.sp,
                                 color = AccentBlueLight
                             )
