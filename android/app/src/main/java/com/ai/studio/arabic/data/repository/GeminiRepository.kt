@@ -28,14 +28,9 @@ class GeminiRepository(private val context: Context? = null) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // Ordered sequence of verified models to try automatically
-    private val candidateModels = listOf(
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-exp",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro-latest",
-        "gemini-pro"
-    )
+    // Dynamically discovered and verified model ID cached in memory
+    @Volatile
+    private var verifiedActiveModel: String? = null
 
     fun getApiKey(): String {
         val customKey = context?.let { UserPreferences.getApiKey(it) }
@@ -46,13 +41,117 @@ class GeminiRepository(private val context: Context? = null) {
     }
 
     /**
-     * Executes a raw generateContent call to Gemini REST API with robust JSON parsing and multi-model fallback.
+     * Queries the official Google Gemini v1beta ListModels endpoint:
+     * GET https://generativelanguage.googleapis.com/v1beta/models?key={apiKey}
+     * Filters for models that explicitly include "generateContent" in their supportedGenerationMethods,
+     * and selects the most optimal model available for the specific API key.
+     */
+    suspend fun discoverAvailableModels(): List<String> = withContext(Dispatchers.IO) {
+        val apiKey = getApiKey()
+        if (apiKey.isBlank()) {
+            return@withContext emptyList()
+        }
+
+        try {
+            val url = "https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey"
+            val request = Request.Builder()
+                .url(url)
+                .get()
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            val responseBody = response.body?.string() ?: ""
+
+            if (!response.isSuccessful || responseBody.isBlank()) {
+                return@withContext emptyList()
+            }
+
+            val json = JSONObject(responseBody)
+            val modelsArray = json.optJSONArray("models") ?: return@withContext emptyList()
+            val suitableModels = mutableListOf<String>()
+
+            for (i in 0 until modelsArray.length()) {
+                val modelObj = modelsArray.getJSONObject(i)
+                val rawName = modelObj.optString("name", "") // e.g. "models/gemini-2.0-flash" or "models/gemini-pro"
+                val cleanName = rawName.removePrefix("models/")
+                val supportedMethods = modelObj.optJSONArray("supportedGenerationMethods")
+
+                var supportsGenerateContent = false
+                if (supportedMethods != null) {
+                    for (j in 0 until supportedMethods.length()) {
+                        if (supportedMethods.optString(j) == "generateContent") {
+                            supportsGenerateContent = true
+                            break
+                        }
+                    }
+                }
+
+                if (supportsGenerateContent && cleanName.isNotBlank()) {
+                    suitableModels.add(cleanName)
+                }
+            }
+
+            // Rank models by capability & speed (e.g. 2.0-flash, 2.0-flash-exp, 1.5-flash-latest, 1.5-pro, gemini-pro)
+            val priorityOrder = listOf(
+                "gemini-2.0-flash",
+                "gemini-2.0-flash-exp",
+                "gemini-1.5-flash-latest",
+                "gemini-1.5-flash",
+                "gemini-1.5-pro-latest",
+                "gemini-1.5-pro",
+                "gemini-pro"
+            )
+
+            val sorted = suitableModels.sortedWith(
+                compareBy { model ->
+                    val index = priorityOrder.indexOfFirst { priority -> model.contains(priority, ignoreCase = true) }
+                    if (index >= 0) index else 999
+                }
+            )
+
+            if (sorted.isNotEmpty()) {
+                verifiedActiveModel = sorted.first()
+            }
+
+            sorted
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Resolves the current best model name, querying ListModels dynamically if needed.
+     */
+    private suspend fun resolveModelToUse(): List<String> {
+        val cached = verifiedActiveModel
+        if (cached != null) {
+            return listOf(cached)
+        }
+
+        val discovered = discoverAvailableModels()
+        if (discovered.isNotEmpty()) {
+            return discovered
+        }
+
+        // Standard default candidate list if ListModels is temporarily unreachable
+        return listOf(
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-exp",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro-latest",
+            "gemini-pro"
+        )
+    }
+
+    /**
+     * Executes a raw generateContent call to Gemini REST API with robust JSON parsing and dynamic model discovery.
      */
     private suspend fun callGeminiApi(
         prompt: String,
         systemInstruction: String? = null,
         imageBitmap: Bitmap? = null,
         history: List<Pair<String, Boolean>> = emptyList(),
+        modelList: List<String>? = null,
         modelIndex: Int = 0
     ): Result<String> = withContext(Dispatchers.IO) {
         val apiKey = getApiKey()
@@ -62,7 +161,8 @@ class GeminiRepository(private val context: Context? = null) {
             )
         }
 
-        val modelName = candidateModels.getOrElse(modelIndex) { candidateModels.first() }
+        val activeModels = modelList ?: resolveModelToUse()
+        val modelName = activeModels.getOrElse(modelIndex) { activeModels.firstOrNull() ?: "gemini-2.0-flash" }
 
         try {
             val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey"
@@ -144,7 +244,7 @@ class GeminiRepository(private val context: Context? = null) {
 
             if (!response.isSuccessful) {
                 var errorMessage = "HTTP ${response.code}: ${response.message}"
-                var is404ModelNotFound = false
+                var isModelUnavailable = false
 
                 try {
                     if (responseBody.isNotBlank()) {
@@ -159,21 +259,27 @@ class GeminiRepository(private val context: Context? = null) {
                                 msg.contains("is no longer available", ignoreCase = true) ||
                                 msg.contains("not supported for generateContent", ignoreCase = true)
                             ) {
-                                is404ModelNotFound = true
+                                isModelUnavailable = true
                             }
                         }
                     }
                 } catch (_: Exception) {}
 
-                // If model is not found or unsupported, fallback to next available model in the sequence
-                if (is404ModelNotFound && modelIndex + 1 < candidateModels.size) {
-                    return@withContext callGeminiApi(
-                        prompt = prompt,
-                        systemInstruction = systemInstruction,
-                        imageBitmap = imageBitmap,
-                        history = history,
-                        modelIndex = modelIndex + 1
-                    )
+                // If this model is unsupported/not found for this key, invalidate cache and try next in list
+                if (isModelUnavailable) {
+                    if (verifiedActiveModel == modelName) {
+                        verifiedActiveModel = null
+                    }
+                    if (modelIndex + 1 < activeModels.size) {
+                        return@withContext callGeminiApi(
+                            prompt = prompt,
+                            systemInstruction = systemInstruction,
+                            imageBitmap = imageBitmap,
+                            history = history,
+                            modelList = activeModels,
+                            modelIndex = modelIndex + 1
+                        )
+                    }
                 }
 
                 val friendlyError = when (response.code) {
@@ -187,6 +293,9 @@ class GeminiRepository(private val context: Context? = null) {
 
                 return@withContext Result.failure(Exception(friendlyError))
             }
+
+            // Cache the successful model
+            verifiedActiveModel = modelName
 
             val jsonResponse = JSONObject(responseBody)
             val candidates = jsonResponse.optJSONArray("candidates")
