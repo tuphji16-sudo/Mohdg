@@ -141,11 +141,10 @@ class GeminiRepository(private val context: Context? = null) {
 
     /**
      * Executes generateContent API call iteratively across models:
-     * - Protects against deadlocks with non-reentrant Mutex and iterative loop
-     * - Network timeout protection
+     * - Automatic model fallback if model returns 404 (NOT_FOUND)
      * - Exponential backoff retry on HTTP 429
-     * - Handles HTTP 400, 403, 404, 500, 503
-     * - Safe JSON parsing without assuming "details" field exists
+     * - Safe JSON parsing for standard response & error payloads
+     * - Network timeout and connection handling
      */
     private suspend fun callGeminiApi(
         prompt: String,
@@ -164,12 +163,11 @@ class GeminiRepository(private val context: Context? = null) {
             return@withContext Result.failure(IllegalStateException(GeminiConfig.MSG_RATE_LIMIT))
         }
 
-        // Enforce maximum execution timeout across entire operation
         try {
             withTimeout(GeminiConfig.COROUTINE_TIMEOUT_MS) {
                 requestMutex.withLock {
                     val candidateModels = getCandidateModels()
-                    var lastErrorMessage = GeminiConfig.MSG_MODEL_UNAVAILABLE
+                    var lastErrorMessage = "تعذر الحصول على رد من النموذج."
 
                     for (modelName in candidateModels) {
                         val maxRetries = GeminiConfig.MAX_RETRIES_ON_429
@@ -282,7 +280,6 @@ class GeminiRepository(private val context: Context? = null) {
 
                                 Log.w(TAG, "API call to model $modelName failed with HTTP ${response.code}")
 
-                                // Check error body safely without assuming "details"
                                 var isRateLimited = (response.code == 429)
                                 var isModelUnavailable = (response.code == 404)
 
@@ -301,14 +298,17 @@ class GeminiRepository(private val context: Context? = null) {
                                                 isModelUnavailable = true
                                             }
 
-                                            if (status == "RESOURCE_EXHAUSTED" || msg.contains("quota", ignoreCase = true) || msg.contains("rate limit", ignoreCase = true)) {
+                                            if (status == "RESOURCE_EXHAUSTED" ||
+                                                msg.contains("quota", ignoreCase = true) ||
+                                                msg.contains("rate limit", ignoreCase = true)
+                                            ) {
                                                 isRateLimited = true
                                             }
                                         }
                                     } catch (_: Exception) {}
                                 }
 
-                                // 429 Rate Limit Handling
+                                // 429 Rate Limit Handling with Exponential Backoff
                                 if (isRateLimited) {
                                     if (attempt < maxRetries) {
                                         attempt++
@@ -321,7 +321,7 @@ class GeminiRepository(private val context: Context? = null) {
                                     }
                                 }
 
-                                // 404 / Model Unavailable Handling -> Try next candidate model
+                                // 404 / Model Unavailable -> Fallback to next supported candidate
                                 if (isModelUnavailable) {
                                     if (verifiedActiveModel == modelName) {
                                         verifiedActiveModel = null
@@ -330,7 +330,6 @@ class GeminiRepository(private val context: Context? = null) {
                                     break
                                 }
 
-                                // Handle other HTTP errors
                                 val errorMessage = when (response.code) {
                                     400 -> GeminiConfig.MSG_INVALID_REQUEST
                                     403 -> GeminiConfig.MSG_AUTH_ERROR
