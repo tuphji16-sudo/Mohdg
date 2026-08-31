@@ -3,6 +3,7 @@ package com.ai.studio.arabic.data.repository
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Base64
+import android.util.Log
 import com.ai.studio.arabic.BuildConfig
 import com.ai.studio.arabic.data.config.GeminiConfig
 import com.ai.studio.arabic.data.local.UserPreferences
@@ -10,10 +11,12 @@ import com.ai.studio.arabic.data.models.ReasoningMode
 import com.ai.studio.arabic.data.models.SceneItem
 import com.ai.studio.arabic.data.models.StoryboardItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,6 +32,10 @@ import java.util.concurrent.TimeUnit
 
 class GeminiRepository(private val context: Context? = null) {
 
+    companion object {
+        private const val TAG = "GeminiRepository"
+    }
+
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(GeminiConfig.CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .readTimeout(GeminiConfig.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -36,7 +43,7 @@ class GeminiRepository(private val context: Context? = null) {
         .retryOnConnectionFailure(true)
         .build()
 
-    // Concurrency control: Mutex prevents multiple overlapping requests from spamming the API
+    // Concurrency control: Mutex prevents multiple overlapping requests from bursting the API
     private val requestMutex = Mutex()
 
     // Dynamically discovered and verified active model
@@ -57,7 +64,7 @@ class GeminiRepository(private val context: Context? = null) {
 
     /**
      * Discovers currently supported models via Gemini REST ListModels endpoint.
-     * Filters out deprecated 1.5 models and picks modern supported models (e.g. Gemini 2.0 Flash).
+     * Filters for generateContent support and excludes deprecated models.
      */
     suspend fun discoverAvailableModels(): List<String> = withContext(Dispatchers.IO) {
         val apiKey = getApiKey()
@@ -73,6 +80,7 @@ class GeminiRepository(private val context: Context? = null) {
             val responseBody = response.body?.string() ?: ""
 
             if (!response.isSuccessful || responseBody.isBlank()) {
+                Log.w(TAG, "ListModels request returned HTTP ${response.code}")
                 return@withContext GeminiConfig.FALLBACK_MODELS
             }
 
@@ -103,7 +111,6 @@ class GeminiRepository(private val context: Context? = null) {
             }
 
             if (suitableModels.isNotEmpty()) {
-                // Prioritize GeminiConfig.PRIMARY_MODEL
                 val sorted = suitableModels.sortedWith(
                     compareBy { model ->
                         val index = GeminiConfig.FALLBACK_MODELS.indexOfFirst { candidate ->
@@ -113,44 +120,38 @@ class GeminiRepository(private val context: Context? = null) {
                     }
                 )
                 verifiedActiveModel = sorted.first()
+                Log.d(TAG, "Discovered active model: ${sorted.first()}")
                 sorted
             } else {
                 GeminiConfig.FALLBACK_MODELS
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to discover models: ${e.message}")
             GeminiConfig.FALLBACK_MODELS
         }
     }
 
-    private suspend fun resolveModelToUse(): List<String> {
+    private suspend fun getCandidateModels(): List<String> {
         val cached = verifiedActiveModel
         if (cached != null) {
             return listOf(cached) + GeminiConfig.FALLBACK_MODELS.filter { it != cached }
         }
-
-        val discovered = discoverAvailableModels()
-        if (discovered.isNotEmpty()) {
-            return discovered
-        }
-
         return GeminiConfig.FALLBACK_MODELS
     }
 
     /**
-     * Core API caller with:
-     * - Request serialization (Mutex)
-     * - HTTP 429 Exponential Backoff retry
-     * - Timeout & Network error protection
-     * - Model fallback on 404
-     * - Friendly user-facing Arabic error messages
+     * Executes generateContent API call iteratively across models:
+     * - Protects against deadlocks with non-reentrant Mutex and iterative loop
+     * - Network timeout protection
+     * - Exponential backoff retry on HTTP 429
+     * - Handles HTTP 400, 403, 404, 500, 503
+     * - Safe JSON parsing without assuming "details" field exists
      */
     private suspend fun callGeminiApi(
         prompt: String,
         systemInstruction: String? = null,
         imageBitmap: Bitmap? = null,
-        history: List<Pair<String, Boolean>> = emptyList(),
-        modelList: List<String>? = null,
-        modelIndex: Int = 0
+        history: List<Pair<String, Boolean>> = emptyList()
     ): Result<String> = withContext(Dispatchers.IO) {
         val apiKey = getApiKey()
         if (apiKey.isBlank()) {
@@ -163,210 +164,215 @@ class GeminiRepository(private val context: Context? = null) {
             return@withContext Result.failure(IllegalStateException(GeminiConfig.MSG_RATE_LIMIT))
         }
 
-        // Acquire Mutex to prevent simultaneous bursting
-        requestMutex.withLock {
-            val activeModels = modelList ?: resolveModelToUse()
-            val modelName = activeModels.getOrElse(modelIndex) {
-                activeModels.firstOrNull() ?: GeminiConfig.PRIMARY_MODEL
-            }
+        // Enforce maximum execution timeout across entire operation
+        try {
+            withTimeout(GeminiConfig.COROUTINE_TIMEOUT_MS) {
+                requestMutex.withLock {
+                    val candidateModels = getCandidateModels()
+                    var lastErrorMessage = GeminiConfig.MSG_MODEL_UNAVAILABLE
 
-            val maxRetries = GeminiConfig.MAX_RETRIES_ON_429
-            var attempt = 0
-            var delayMs = GeminiConfig.INITIAL_BACKOFF_MS
+                    for (modelName in candidateModels) {
+                        val maxRetries = GeminiConfig.MAX_RETRIES_ON_429
+                        var attempt = 0
+                        var delayMs = GeminiConfig.INITIAL_BACKOFF_MS
+                        var shouldTryNextModel = false
 
-            while (attempt <= maxRetries) {
-                try {
-                    val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey"
+                        while (attempt <= maxRetries && !shouldTryNextModel) {
+                            try {
+                                val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey"
 
-                    val rootJson = JSONObject()
+                                val rootJson = JSONObject()
 
-                    // 1. System instruction
-                    if (!systemInstruction.isNullOrBlank()) {
-                        val systemParts = JSONArray().apply {
-                            put(JSONObject().put("text", systemInstruction))
-                        }
-                        rootJson.put("systemInstruction", JSONObject().put("parts", systemParts))
-                    }
+                                // 1. System instruction
+                                if (!systemInstruction.isNullOrBlank()) {
+                                    val systemParts = JSONArray().apply {
+                                        put(JSONObject().put("text", systemInstruction))
+                                    }
+                                    rootJson.put("systemInstruction", JSONObject().put("parts", systemParts))
+                                }
 
-                    // 2. Contents
-                    val contentsArray = JSONArray()
+                                // 2. Contents
+                                val contentsArray = JSONArray()
 
-                    // Chat history
-                    for ((text, isUser) in history) {
-                        val role = if (isUser) "user" else "model"
-                        val turnParts = JSONArray().apply {
-                            put(JSONObject().put("text", text))
-                        }
-                        contentsArray.put(
-                            JSONObject().apply {
-                                put("role", role)
-                                put("parts", turnParts)
+                                // History turns
+                                for ((text, isUser) in history) {
+                                    val role = if (isUser) "user" else "model"
+                                    val turnParts = JSONArray().apply {
+                                        put(JSONObject().put("text", text))
+                                    }
+                                    contentsArray.put(
+                                        JSONObject().apply {
+                                            put("role", role)
+                                            put("parts", turnParts)
+                                        }
+                                    )
+                                }
+
+                                // Current prompt parts
+                                val currentParts = JSONArray()
+
+                                if (imageBitmap != null) {
+                                    val outputStream = ByteArrayOutputStream()
+                                    imageBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
+                                    val base64Image = Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
+
+                                    val imagePart = JSONObject().apply {
+                                        put("inlineData", JSONObject().apply {
+                                            put("mimeType", "image/jpeg")
+                                            put("data", base64Image)
+                                        })
+                                    }
+                                    currentParts.put(imagePart)
+                                }
+
+                                currentParts.put(JSONObject().put("text", prompt))
+
+                                contentsArray.put(
+                                    JSONObject().apply {
+                                        put("role", "user")
+                                        put("parts", currentParts)
+                                    }
+                                )
+
+                                rootJson.put("contents", contentsArray)
+
+                                // 3. Generation configuration
+                                val genConfig = JSONObject().apply {
+                                    put("temperature", 0.7)
+                                    put("topP", 0.95)
+                                    put("maxOutputTokens", 4096)
+                                }
+                                rootJson.put("generationConfig", genConfig)
+
+                                val requestBody = rootJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+                                val request = Request.Builder()
+                                    .url(url)
+                                    .post(requestBody)
+                                    .addHeader("Content-Type", "application/json")
+                                    .build()
+
+                                val response = httpClient.newCall(request).execute()
+                                val responseBody = response.body?.string() ?: ""
+
+                                if (response.isSuccessful) {
+                                    verifiedActiveModel = modelName
+                                    rateLimitCooldownUntil = 0L
+
+                                    val jsonResponse = JSONObject(responseBody)
+                                    val candidates = jsonResponse.optJSONArray("candidates")
+                                    if (candidates != null && candidates.length() > 0) {
+                                        val firstCandidate = candidates.getJSONObject(0)
+                                        val contentObj = firstCandidate.optJSONObject("content")
+                                        val parts = contentObj?.optJSONArray("parts")
+                                        if (parts != null && parts.length() > 0) {
+                                            val textBuilder = StringBuilder()
+                                            for (i in 0 until parts.length()) {
+                                                val part = parts.getJSONObject(i)
+                                                val text = part.optString("text", "")
+                                                textBuilder.append(text)
+                                            }
+                                            val resultText = textBuilder.toString().trim()
+                                            if (resultText.isNotBlank()) {
+                                                return@withLock Result.success(resultText)
+                                            }
+                                        }
+                                    }
+                                    return@withLock Result.success("تم استلام رد بدون محتوى نصي.")
+                                }
+
+                                Log.w(TAG, "API call to model $modelName failed with HTTP ${response.code}")
+
+                                // Check error body safely without assuming "details"
+                                var isRateLimited = (response.code == 429)
+                                var isModelUnavailable = (response.code == 404)
+
+                                if (responseBody.isNotBlank()) {
+                                    try {
+                                        val errorJson = JSONObject(responseBody).optJSONObject("error")
+                                        if (errorJson != null) {
+                                            val msg = errorJson.optString("message", "")
+                                            val status = errorJson.optString("status", "")
+
+                                            if (status == "NOT_FOUND" ||
+                                                msg.contains("not found", ignoreCase = true) ||
+                                                msg.contains("is not supported", ignoreCase = true) ||
+                                                msg.contains("is no longer available", ignoreCase = true)
+                                            ) {
+                                                isModelUnavailable = true
+                                            }
+
+                                            if (status == "RESOURCE_EXHAUSTED" || msg.contains("quota", ignoreCase = true) || msg.contains("rate limit", ignoreCase = true)) {
+                                                isRateLimited = true
+                                            }
+                                        }
+                                    } catch (_: Exception) {}
+                                }
+
+                                // 429 Rate Limit Handling
+                                if (isRateLimited) {
+                                    if (attempt < maxRetries) {
+                                        attempt++
+                                        delay(delayMs)
+                                        delayMs = (delayMs * 2).coerceAtMost(GeminiConfig.MAX_BACKOFF_MS)
+                                        continue
+                                    } else {
+                                        rateLimitCooldownUntil = System.currentTimeMillis() + GeminiConfig.RATE_LIMIT_COOLDOWN_MS
+                                        return@withLock Result.failure(Exception(GeminiConfig.MSG_RATE_LIMIT))
+                                    }
+                                }
+
+                                // 404 / Model Unavailable Handling -> Try next candidate model
+                                if (isModelUnavailable) {
+                                    if (verifiedActiveModel == modelName) {
+                                        verifiedActiveModel = null
+                                    }
+                                    shouldTryNextModel = true
+                                    break
+                                }
+
+                                // Handle other HTTP errors
+                                val errorMessage = when (response.code) {
+                                    400 -> GeminiConfig.MSG_INVALID_REQUEST
+                                    403 -> GeminiConfig.MSG_AUTH_ERROR
+                                    500, 503 -> GeminiConfig.MSG_SERVER_BUSY
+                                    else -> "فشل الاتصال بنموذج الذكاء الاصطناعي (رمز: ${response.code})."
+                                }
+                                lastErrorMessage = errorMessage
+                                return@withLock Result.failure(Exception(errorMessage))
+
+                            } catch (e: SocketTimeoutException) {
+                                Log.w(TAG, "SocketTimeoutException on model $modelName: ${e.message}")
+                                if (attempt < maxRetries) {
+                                    attempt++
+                                    delay(delayMs)
+                                } else {
+                                    return@withLock Result.failure(Exception(GeminiConfig.MSG_TIMEOUT))
+                                }
+                            } catch (e: UnknownHostException) {
+                                Log.w(TAG, "UnknownHostException: ${e.message}")
+                                return@withLock Result.failure(Exception(GeminiConfig.MSG_NO_NETWORK))
+                            } catch (e: IOException) {
+                                Log.w(TAG, "IOException on model $modelName: ${e.message}")
+                                if (attempt < maxRetries) {
+                                    attempt++
+                                    delay(delayMs)
+                                } else {
+                                    return@withLock Result.failure(Exception(GeminiConfig.MSG_NO_NETWORK))
+                                }
                             }
-                        )
-                    }
-
-                    // Current prompt
-                    val currentParts = JSONArray()
-
-                    // Optional image attachment
-                    if (imageBitmap != null) {
-                        val outputStream = ByteArrayOutputStream()
-                        imageBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
-                        val base64Image = Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
-
-                        val imagePart = JSONObject().apply {
-                            put("inlineData", JSONObject().apply {
-                                put("mimeType", "image/jpeg")
-                                put("data", base64Image)
-                            })
-                        }
-                        currentParts.put(imagePart)
-                    }
-
-                    currentParts.put(JSONObject().put("text", prompt))
-
-                    contentsArray.put(
-                        JSONObject().apply {
-                            put("role", "user")
-                            put("parts", currentParts)
-                        }
-                    )
-
-                    rootJson.put("contents", contentsArray)
-
-                    // 3. Generation configuration
-                    val genConfig = JSONObject().apply {
-                        put("temperature", 0.7)
-                        put("topP", 0.95)
-                        put("maxOutputTokens", 4096)
-                    }
-                    rootJson.put("generationConfig", genConfig)
-
-                    val requestBody = rootJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-                    val request = Request.Builder()
-                        .url(url)
-                        .post(requestBody)
-                        .addHeader("Content-Type", "application/json")
-                        .build()
-
-                    val response = httpClient.newCall(request).execute()
-                    val responseBody = response.body?.string() ?: ""
-
-                    if (response.isSuccessful) {
-                        verifiedActiveModel = modelName
-                        rateLimitCooldownUntil = 0L
-
-                        val jsonResponse = JSONObject(responseBody)
-                        val candidates = jsonResponse.optJSONArray("candidates")
-                        if (candidates != null && candidates.length() > 0) {
-                            val firstCandidate = candidates.getJSONObject(0)
-                            val contentObj = firstCandidate.optJSONObject("content")
-                            val parts = contentObj?.optJSONArray("parts")
-                            if (parts != null && parts.length() > 0) {
-                                val textBuilder = StringBuilder()
-                                for (i in 0 until parts.length()) {
-                                    val part = parts.getJSONObject(i)
-                                    val text = part.optString("text", "")
-                                    textBuilder.append(text)
-                                }
-                                val resultText = textBuilder.toString().trim()
-                                if (resultText.isNotBlank()) {
-                                    return@withContext Result.success(resultText)
-                                }
-                            }
-                        }
-                        return@withContext Result.success("تم استلام رد بدون محتوى نصي.")
-                    }
-
-                    // Process error codes safely
-                    var isModelUnavailable = false
-                    var isRateLimited = (response.code == 429)
-
-                    if (responseBody.isNotBlank()) {
-                        try {
-                            val errorJson = JSONObject(responseBody).optJSONObject("error")
-                            if (errorJson != null) {
-                                val msg = errorJson.optString("message", "")
-                                val status = errorJson.optString("status", "")
-
-                                if (response.code == 404 || status == "NOT_FOUND" ||
-                                    msg.contains("not found", ignoreCase = true) ||
-                                    msg.contains("is not supported", ignoreCase = true) ||
-                                    msg.contains("is no longer available", ignoreCase = true)
-                                ) {
-                                    isModelUnavailable = true
-                                }
-
-                                if (status == "RESOURCE_EXHAUSTED" || msg.contains("quota", ignoreCase = true) || msg.contains("rate limit", ignoreCase = true)) {
-                                    isRateLimited = true
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-
-                    // Handle HTTP 429 Too Many Requests
-                    if (isRateLimited) {
-                        if (attempt < maxRetries) {
-                            attempt++
-                            delay(delayMs)
-                            delayMs = (delayMs * 2).coerceAtMost(GeminiConfig.MAX_BACKOFF_MS)
-                            continue
-                        } else {
-                            rateLimitCooldownUntil = System.currentTimeMillis() + GeminiConfig.RATE_LIMIT_COOLDOWN_MS
-                            return@withContext Result.failure(Exception(GeminiConfig.MSG_RATE_LIMIT))
                         }
                     }
 
-                    // Handle Model Not Found -> Fallback to next supported model
-                    if (isModelUnavailable) {
-                        if (verifiedActiveModel == modelName) {
-                            verifiedActiveModel = null
-                        }
-                        if (modelIndex + 1 < activeModels.size) {
-                            return@withContext callGeminiApi(
-                                prompt = prompt,
-                                systemInstruction = systemInstruction,
-                                imageBitmap = imageBitmap,
-                                history = history,
-                                modelList = activeModels,
-                                modelIndex = modelIndex + 1
-                            )
-                        }
-                    }
-
-                    val userMessage = when (response.code) {
-                        403 -> GeminiConfig.MSG_AUTH_ERROR
-                        404 -> "النموذج غير متاح حالياً ($modelName)، يرجى إعادة المحاولة."
-                        429 -> GeminiConfig.MSG_RATE_LIMIT
-                        500, 503 -> GeminiConfig.MSG_SERVER_BUSY
-                        else -> "فشل الاتصال بنموذج الذكاء الاصطناعي (رمز: ${response.code})."
-                    }
-
-                    return@withContext Result.failure(Exception(userMessage))
-
-                } catch (e: SocketTimeoutException) {
-                    if (attempt < maxRetries) {
-                        attempt++
-                        delay(delayMs)
-                    } else {
-                        return@withContext Result.failure(Exception(GeminiConfig.MSG_TIMEOUT))
-                    }
-                } catch (e: UnknownHostException) {
-                    return@withContext Result.failure(Exception(GeminiConfig.MSG_NO_NETWORK))
-                } catch (e: IOException) {
-                    if (attempt < maxRetries) {
-                        attempt++
-                        delay(delayMs)
-                    } else {
-                        return@withContext Result.failure(Exception(GeminiConfig.MSG_NO_NETWORK))
-                    }
-                } catch (e: Exception) {
-                    val msg = e.localizedMessage ?: e.message ?: "خطأ غير متوقع"
-                    return@withContext Result.failure(Exception(msg))
+                    Result.failure(Exception(lastErrorMessage))
                 }
             }
-
-            Result.failure(Exception(GeminiConfig.MSG_RATE_LIMIT))
+        } catch (e: TimeoutCancellationException) {
+            Log.w(TAG, "Request cancelled due to timeout")
+            Result.failure(Exception(GeminiConfig.MSG_TIMEOUT))
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error in callGeminiApi: ${e.message}")
+            val msg = e.localizedMessage ?: e.message ?: GeminiConfig.MSG_TIMEOUT
+            Result.failure(Exception(msg))
         }
     }
 

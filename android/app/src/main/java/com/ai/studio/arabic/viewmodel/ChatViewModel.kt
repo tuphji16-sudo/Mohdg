@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.speech.tts.TextToSpeech
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ai.studio.arabic.data.config.GeminiConfig
 import com.ai.studio.arabic.data.models.ChatMessage
 import com.ai.studio.arabic.data.models.ReasoningMode
 import com.ai.studio.arabic.data.repository.GeminiRepository
@@ -63,6 +64,7 @@ class ChatViewModel(private val repository: GeminiRepository = GeminiRepository(
     }
 
     fun sendMessage(userText: String) {
+        // Prevent concurrent requests
         if (_isLoading.value) return
         if (userText.isBlank() && _attachedImageBitmap.value == null) return
 
@@ -80,10 +82,17 @@ class ChatViewModel(private val repository: GeminiRepository = GeminiRepository(
 
         viewModelScope.launch {
             try {
+                // Build history context for continuity
+                val history = _messages.value
+                    .filter { it.content.isNotBlank() }
+                    .takeLast(10)
+                    .map { Pair(it.content, it.isUser) }
+
                 val replyText = repository.generateChatReply(
                     prompt = userText,
                     mode = _selectedMode.value,
-                    imageBitmap = currentImage
+                    imageBitmap = currentImage,
+                    history = history
                 )
 
                 val botMessage = ChatMessage(
@@ -94,10 +103,11 @@ class ChatViewModel(private val repository: GeminiRepository = GeminiRepository(
                 )
                 _messages.value = _messages.value + botMessage
             } catch (e: Exception) {
+                val errorText = e.localizedMessage ?: e.message ?: GeminiConfig.MSG_TIMEOUT
                 val errorMessage = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     isUser = false,
-                    content = "عذراً، حدث خطأ: ${e.localizedMessage}",
+                    content = errorText,
                     timestamp = getCurrentTime()
                 )
                 _messages.value = _messages.value + errorMessage
