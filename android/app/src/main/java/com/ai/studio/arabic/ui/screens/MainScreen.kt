@@ -1,5 +1,6 @@
 package com.ai.studio.arabic.ui.screens
 
+import android.app.Application
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -14,10 +15,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ai.studio.arabic.data.local.UserPreferences
+import com.ai.studio.arabic.data.repository.GeminiRepository
+import com.ai.studio.arabic.ui.components.ApiKeyDialog
 import com.ai.studio.arabic.ui.components.QuickTemplatesSheet
 import com.ai.studio.arabic.ui.theme.*
 import com.ai.studio.arabic.viewmodel.*
@@ -36,15 +41,20 @@ enum class AppTab(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(
-    chatViewModel: ChatViewModel = viewModel(),
-    imageViewModel: ImageViewModel = viewModel(),
-    videoViewModel: VideoViewModel = viewModel(),
-    audioViewModel: AudioViewModel = viewModel(),
-    galleryViewModel: GalleryViewModel = viewModel()
-) {
+fun MainScreen() {
+    val context = LocalContext.current
+    val repository = remember { GeminiRepository(context) }
+
+    val chatViewModel: ChatViewModel = viewModel { ChatViewModel(repository) }
+    val imageViewModel: ImageViewModel = viewModel { ImageViewModel(repository) }
+    val videoViewModel: VideoViewModel = viewModel { VideoViewModel(repository) }
+    val audioViewModel: AudioViewModel = viewModel { AudioViewModel(repository) }
+    val galleryViewModel: GalleryViewModel = viewModel()
+
     var currentTab by remember { mutableStateOf(AppTab.CHAT) }
     var showTemplatesSheet by remember { mutableStateOf(false) }
+    var showApiKeyDialog by remember { mutableStateOf(false) }
+    var currentApiKey by remember { mutableStateOf(UserPreferences.getApiKey(context)) }
 
     Scaffold(
         topBar = {
@@ -84,6 +94,27 @@ fun MainScreen(
                     }
                 },
                 actions = {
+                    // API Key Settings button
+                    IconButton(
+                        onClick = {
+                            currentApiKey = UserPreferences.getApiKey(context)
+                            showApiKeyDialog = true
+                        },
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (currentApiKey.isNotBlank()) AccentBlue.copy(alpha = 0.2f) else CardBg)
+                            .border(1.dp, if (currentApiKey.isNotBlank()) AccentBlue else BorderDark, RoundedCornerShape(8.dp))
+                    ) {
+                        Icon(
+                            Icons.Default.Key,
+                            contentDescription = "إعدادات المفتاح",
+                            tint = if (currentApiKey.isNotBlank()) AccentBlueLight else TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
                     // Quick Templates button
                     IconButton(
                         onClick = { showTemplatesSheet = true },
@@ -183,6 +214,17 @@ fun MainScreen(
                             audioViewModel.updateDraftText(template.prompt)
                         }
                     }
+                }
+            )
+        }
+
+        if (showApiKeyDialog) {
+            ApiKeyDialog(
+                currentKey = currentApiKey,
+                onDismiss = { showApiKeyDialog = false },
+                onSave = { newKey ->
+                    UserPreferences.setApiKey(context, newKey)
+                    currentApiKey = newKey
                 }
             )
         }

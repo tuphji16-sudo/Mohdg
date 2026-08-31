@@ -1,7 +1,9 @@
 package com.ai.studio.arabic.data.repository
 
+import android.content.Context
 import android.graphics.Bitmap
 import com.ai.studio.arabic.BuildConfig
+import com.ai.studio.arabic.data.local.UserPreferences
 import com.ai.studio.arabic.data.models.ReasoningMode
 import com.ai.studio.arabic.data.models.SceneItem
 import com.ai.studio.arabic.data.models.StoryboardItem
@@ -12,16 +14,24 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
 
-class GeminiRepository(private val customApiKey: String? = null) {
+class GeminiRepository(private val context: Context? = null) {
 
-    private fun getApiKey(): String {
-        return customApiKey?.takeIf { it.isNotBlank() } ?: BuildConfig.GEMINI_API_KEY
+    fun getApiKey(): String {
+        val customKey = context?.let { UserPreferences.getApiKey(it) }
+        if (!customKey.isNullOrBlank()) {
+            return customKey
+        }
+        return BuildConfig.GEMINI_API_KEY
     }
 
     private fun getModel(systemInstruction: String? = null): GenerativeModel {
+        val apiKey = getApiKey()
+        if (apiKey.isBlank()) {
+            throw IllegalStateException("مفتاح API غير متوفر. يرجى إدخال مفتاح Gemini API من زر المفتاح 🔑 في أعلى الشاشة.")
+        }
         return GenerativeModel(
             modelName = "gemini-2.5-flash",
-            apiKey = getApiKey(),
+            apiKey = apiKey,
             systemInstruction = systemInstruction?.let { content { text(it) } }
         )
     }
@@ -33,6 +43,11 @@ class GeminiRepository(private val customApiKey: String? = null) {
         history: List<Pair<String, Boolean>> = emptyList()
     ): String = withContext(Dispatchers.IO) {
         try {
+            val apiKey = getApiKey()
+            if (apiKey.isBlank()) {
+                return@withContext "⚠️ يرجى ضبط مفتاح Gemini API من خلال أيقونة المفتاح 🔑 في أعلى الشاشة لتتمكن من إجراء المحادثات والاتصال بالذكاء الاصطناعي."
+            }
+
             val model = getModel(mode.systemInstruction)
             if (imageBitmap != null) {
                 val inputContent = content {
@@ -46,12 +61,21 @@ class GeminiRepository(private val customApiKey: String? = null) {
                 response.text ?: "عذراً، لم أتمكن من الحصول على إجابة."
             }
         } catch (e: Exception) {
-            "حدث خطأ أثناء التواصل مع نموذج الذكاء الاصطناعي: ${e.localizedMessage}"
+            val msg = e.localizedMessage ?: e.message ?: "خطأ غير معروف"
+            if (msg.contains("PERMISSION_DENIED") || msg.contains("403") || msg.contains("API key")) {
+                "⚠️ خطأ في صلاحية المفتاح (403 Permission Denied): تأكد من إدخال مفتاح Gemini API صالح من زر 🔑 في الأعلى."
+            } else {
+                "حدث خطأ أثناء التواصل مع نموذج الذكاء الاصطناعي: $msg"
+            }
         }
     }
 
     suspend fun enhanceImagePrompt(userPrompt: String, style: String): String = withContext(Dispatchers.IO) {
         try {
+            val apiKey = getApiKey()
+            if (apiKey.isBlank()) {
+                return@withContext userPrompt
+            }
             val model = getModel(
                 "You are an expert AI prompt engineer. Convert the user's prompt into an ultra-detailed, vivid English prompt suitable for Imagen 3 and high-end image models. Include lighting, composition, mood, textures, and specify style: $style. Output ONLY the refined English prompt text, nothing else."
             )
@@ -64,6 +88,11 @@ class GeminiRepository(private val customApiKey: String? = null) {
 
     suspend fun generateStoryboard(topic: String, duration: String, tone: String): StoryboardItem = withContext(Dispatchers.IO) {
         try {
+            val apiKey = getApiKey()
+            if (apiKey.isBlank()) {
+                return@withContext createFallbackStoryboard(topic, duration)
+            }
+
             val systemPrompt = """
                 أنت مخرج سينمائي وكاتب سيناريو محترف للذكاء الاصطناعي.
                 المطلوب: توليد قصة مصورة (Storyboard) متكاملة واحترافية للموضوع المعطى.
@@ -123,60 +152,73 @@ class GeminiRepository(private val customApiKey: String? = null) {
                 createdAt = "الآن"
             )
         } catch (e: Exception) {
-            // Fallback default storyboard
-            StoryboardItem(
-                id = UUID.randomUUID().toString(),
-                title = "سيناريو: $topic",
-                logline = "رؤية إبداعية بصرية متناسقة مع موضوع $topic",
-                totalDuration = duration,
-                scenes = listOf(
-                    SceneItem(
-                        sceneNumber = 1,
-                        timestamp = "0:00 - 0:05",
-                        visualDescription = "مشهد افتتاحي بانورامي يبرز ملامح $topic بإضاءة دافئة.",
-                        veoPromptEnglish = "Cinematic opening wide drone shot of $topic, golden hour warm sunlight, 4k hyper-realistic",
-                        voiceoverArabic = "في عالم يتجدد كل لحظة، تبدأ رحلتنا مع $topic...",
-                        soundEffects = "لحن وتري هادئ ومؤثر",
-                        cameraAngle = "لقطة واسعة متدرجة الهبوط",
-                        keyframeColor = "#1D4ED8"
-                    ),
-                    SceneItem(
-                        sceneNumber = 2,
-                        timestamp = "0:05 - 0:10",
-                        visualDescription = "تركيز بصري مكثف يظهر تفاصيل ديناميكية وحركة سريعة.",
-                        veoPromptEnglish = "Close-up cinematic shot with smooth camera movement and shallow depth of field, sharp focus, 8k",
-                        voiceoverArabic = "حيث تلتقي الرؤية بالإبداع لتصنع فارقاً حقيقياً.",
-                        soundEffects = "إيقاع تصاعدي ملهم",
-                        cameraAngle = "لقطة مقربة متحركة",
-                        keyframeColor = "#3B82F6"
-                    )
-                ),
-                createdAt = "الآن"
-            )
+            createFallbackStoryboard(topic, duration)
         }
+    }
+
+    private fun createFallbackStoryboard(topic: String, duration: String): StoryboardItem {
+        return StoryboardItem(
+            id = UUID.randomUUID().toString(),
+            title = "سيناريو: $topic",
+            logline = "رؤية إبداعية بصرية متناسقة مع موضوع $topic",
+            totalDuration = duration,
+            scenes = listOf(
+                SceneItem(
+                    sceneNumber = 1,
+                    timestamp = "0:00 - 0:05",
+                    visualDescription = "مشهد افتتاحي بانورامي يبرز ملامح $topic بإضاءة دافئة سينمائية.",
+                    veoPromptEnglish = "Cinematic opening wide drone shot of $topic, golden hour warm sunlight, 4k hyper-realistic",
+                    voiceoverArabic = "في عالم يتجدد كل لحظة، تبدأ رحلتنا مع $topic...",
+                    soundEffects = "لحن وتري هادئ ومؤثر",
+                    cameraAngle = "لقطة واسعة متدرجة الهبوط",
+                    keyframeColor = "#1D4ED8"
+                ),
+                SceneItem(
+                    sceneNumber = 2,
+                    timestamp = "0:05 - 0:10",
+                    visualDescription = "تركيز بصري مكثف يظهر تفاصيل ديناميكية وحركة سريعة ومتقنة.",
+                    veoPromptEnglish = "Close-up cinematic shot with smooth camera movement and shallow depth of field, sharp focus, 8k",
+                    voiceoverArabic = "حيث تلتقي الرؤية بالإبداع لتصنع فارقاً حقيقياً.",
+                    soundEffects = "إيقاع تصاعدي ملهم",
+                    cameraAngle = "لقطة مقربة متحركة",
+                    keyframeColor = "#3B82F6"
+                )
+            ),
+            createdAt = "الآن"
+        )
     }
 
     suspend fun refineArabicText(text: String, tone: String): String = withContext(Dispatchers.IO) {
         try {
+            val apiKey = getApiKey()
+            if (apiKey.isBlank()) {
+                return@withContext "⚠️ يرجى ضبط مفتاح Gemini API من أيقونة المفتاح 🔑 أولاً."
+            }
             val model = getModel(
                 "أنت خبير لغوي ومدقق نحوي وبلاغي باللغة العربية الفصحى. قم بتدقيق النص وتصحيح الأخطاء الإملائية والنحوية، وإعادة صياغته بأسلوب ($tone) مع تقديم النص النهائي المحسن متبوعاً بملاحظات موجزة إن لزم."
             )
             val response = model.generateContent(text)
             response.text ?: "تعذر تدقيق النص."
         } catch (e: Exception) {
-            "خطأ: ${e.localizedMessage}"
+            val msg = e.localizedMessage ?: e.message ?: "خطأ"
+            "خطأ: $msg"
         }
     }
 
     suspend fun translateText(text: String, targetLanguage: String): String = withContext(Dispatchers.IO) {
         try {
+            val apiKey = getApiKey()
+            if (apiKey.isBlank()) {
+                return@withContext "⚠️ يرجى ضبط مفتاح Gemini API من أيقونة المفتاح 🔑 أولاً."
+            }
             val model = getModel(
                 "أنت مترجم فوري وأدبي بارع. قم بترجمة النص إلى ($targetLanguage) مع الحفاظ على روح وسياق المعنى الأصلي بدقة فائقة وبلاغة أصلية."
             )
             val response = model.generateContent(text)
             response.text ?: "تعذر إجراء الترجمة."
         } catch (e: Exception) {
-            "خطأ: ${e.localizedMessage}"
+            val msg = e.localizedMessage ?: e.message ?: "خطأ"
+            "خطأ: $msg"
         }
     }
 }
