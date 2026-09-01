@@ -64,6 +64,17 @@ export interface VideoStoryboard {
   originalTopic: string;
 }
 
+export interface GeneratedVideo {
+  id: string;
+  url: string;
+  prompt: string;
+  aspectRatio: '16:9' | '9:16';
+  resolution: '720p' | '1080p';
+  createdAt: string;
+  duration?: string;
+  operationName?: string;
+}
+
 export interface VeoGenerationJob {
   id: string;
   operationName: string;

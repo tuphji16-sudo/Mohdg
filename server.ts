@@ -387,7 +387,7 @@ app.post("/api/generate-video", async (req, res) => {
   }
 });
 
-// 6. Veo Video Status Polling
+// 6. Veo Video Status Polling & Extraction
 app.post("/api/video-status", async (req, res) => {
   try {
     const { operationName } = req.body;
@@ -399,16 +399,162 @@ app.post("/api/video-status", async (req, res) => {
     const op: any = { name: operationName };
     const updated = await ai.operations.getVideosOperation({ operation: op as any });
 
+    let videoUrl: string | null = null;
+    let rawUri: string | null = null;
+
+    if (updated.done && updated.response) {
+      const generatedVideos = (updated.response as any)?.generatedVideos;
+      if (Array.isArray(generatedVideos) && generatedVideos.length > 0) {
+        const firstVideo = generatedVideos[0]?.video;
+        if (firstVideo?.videoBytes) {
+          videoUrl = `data:video/mp4;base64,${firstVideo.videoBytes}`;
+        } else if (firstVideo?.uri) {
+          rawUri = firstVideo.uri;
+          videoUrl = `/api/video-proxy?uri=${encodeURIComponent(firstVideo.uri)}`;
+        }
+      }
+    }
+
+    const timestamp = Date.now();
+    const downloadFilename = `AI_Video_${timestamp}.mp4`;
+
     res.json({
       done: updated.done,
       error: updated.error || null,
       response: updated.response || null,
+      videoUrl: videoUrl,
+      rawUri: rawUri,
+      downloadUrl: rawUri
+        ? `/api/video-download?uri=${encodeURIComponent(rawUri)}&filename=${encodeURIComponent(downloadFilename)}`
+        : videoUrl,
+      filename: downloadFilename,
     });
   } catch (error: any) {
     console.error("Video status polling error:", error);
     res.status(500).json({
       error: error.message || "حدث خطأ أثناء فحص حالة الفيديو",
     });
+  }
+});
+
+// 6.1 Video Proxy Stream (Safely proxies Veo video stream with server-side API Key)
+app.get("/api/video-proxy", async (req, res) => {
+  try {
+    const videoUri = req.query.uri as string;
+    if (!videoUri) {
+      return res.status(400).send("Video URI is required");
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY || "";
+    const headers: Record<string, string> = {};
+    let fetchUrl = videoUri;
+
+    if (videoUri.includes("googleapis.com")) {
+      headers["x-goog-api-key"] = apiKey;
+      if (!fetchUrl.includes("key=")) {
+        const separator = fetchUrl.includes("?") ? "&" : "?";
+        fetchUrl = `${fetchUrl}${separator}key=${encodeURIComponent(apiKey)}`;
+      }
+    }
+
+    const response = await fetch(fetchUrl, { headers });
+    if (!response.ok) {
+      return res.status(response.status).send(`Failed to proxy video: ${response.statusText}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "video/mp4";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+
+    const arrayBuffer = await response.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+  } catch (error: any) {
+    console.error("Video proxy error:", error);
+    res.status(500).send("Internal server error proxying video");
+  }
+});
+
+// 6.2 Video Download Endpoint (Returns MP4 with attachment Content-Disposition)
+app.get("/api/video-download", async (req, res) => {
+  try {
+    const videoUri = req.query.uri as string;
+    const filename = (req.query.filename as string) || `AI_Video_${Date.now()}.mp4`;
+    if (!videoUri) {
+      return res.status(400).send("Video URI is required");
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY || "";
+    const headers: Record<string, string> = {};
+    let fetchUrl = videoUri;
+
+    if (videoUri.includes("googleapis.com")) {
+      headers["x-goog-api-key"] = apiKey;
+      if (!fetchUrl.includes("key=")) {
+        const separator = fetchUrl.includes("?") ? "&" : "?";
+        fetchUrl = `${fetchUrl}${separator}key=${encodeURIComponent(apiKey)}`;
+      }
+    }
+
+    const response = await fetch(fetchUrl, { headers });
+    if (!response.ok) {
+      return res.status(response.status).send(`Failed to fetch video for download: ${response.statusText}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "video/mp4";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+    const arrayBuffer = await response.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+  } catch (error: any) {
+    console.error("Video download error:", error);
+    res.status(500).send("Internal server error downloading video");
+  }
+});
+
+app.post("/api/video-download", async (req, res) => {
+  try {
+    const { videoUri, filename } = req.body;
+    const targetFilename = filename || `AI_Video_${Date.now()}.mp4`;
+
+    if (!videoUri) {
+      return res.status(400).json({ error: "Video URI is required" });
+    }
+
+    if (videoUri.startsWith("data:")) {
+      const base64Data = videoUri.replace(/^data:video\/[a-zA-Z0-9]+;base64,/, "");
+      const buffer = Buffer.from(base64Data, "base64");
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Disposition", `attachment; filename="${targetFilename}"`);
+      return res.send(buffer);
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY || "";
+    const headers: Record<string, string> = {};
+    let fetchUrl = videoUri;
+
+    if (videoUri.includes("googleapis.com")) {
+      headers["x-goog-api-key"] = apiKey;
+      if (!fetchUrl.includes("key=")) {
+        const separator = fetchUrl.includes("?") ? "&" : "?";
+        fetchUrl = `${fetchUrl}${separator}key=${encodeURIComponent(apiKey)}`;
+      }
+    }
+
+    const response = await fetch(fetchUrl, { headers });
+    if (!response.ok) {
+      return res.status(response.status).json({ error: `Failed to download: ${response.statusText}` });
+    }
+
+    const contentType = response.headers.get("content-type") || "video/mp4";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${targetFilename}"`);
+
+    const arrayBuffer = await response.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+  } catch (error: any) {
+    console.error("POST video download error:", error);
+    res.status(500).json({ error: error.message || "Internal server error downloading video" });
   }
 });
 

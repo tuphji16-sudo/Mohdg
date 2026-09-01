@@ -1,8 +1,9 @@
-import { Conversation, GeneratedImage, VideoStoryboard, AudioItem } from '../types';
+import { Conversation, GeneratedImage, VideoStoryboard, AudioItem, GeneratedVideo } from '../types';
 
 const STORAGE_KEYS = {
   CONVERSATIONS: 'nebras_conversations',
   IMAGES: 'nebras_images',
+  VIDEOS: 'nebras_videos',
   STORYBOARDS: 'nebras_storyboards',
   AUDIOS: 'nebras_audios',
   SETTINGS: 'nebras_settings',
@@ -81,6 +82,41 @@ export const storageService = {
       return data ? JSON.parse(data) : [];
     } catch {
       return [];
+    }
+  },
+
+  // Videos
+  getVideos: (): GeneratedVideo[] => {
+    try {
+      const data = localStorage.getItem(STORAGE_KEYS.VIDEOS);
+      return data ? JSON.parse(data) : [];
+    } catch {
+      return [];
+    }
+  },
+
+  saveVideo: (video: GeneratedVideo) => {
+    try {
+      const list = storageService.getVideos();
+      const index = list.findIndex((v) => v.id === video.id);
+      if (index >= 0) {
+        list[index] = video;
+      } else {
+        list.unshift(video);
+      }
+      const trimmed = list.slice(0, 25);
+      localStorage.setItem(STORAGE_KEYS.VIDEOS, JSON.stringify(trimmed));
+    } catch (e) {
+      console.error('Storage video save error:', e);
+    }
+  },
+
+  deleteVideo: (id: string) => {
+    try {
+      const list = storageService.getVideos().filter((v) => v.id !== id);
+      localStorage.setItem(STORAGE_KEYS.VIDEOS, JSON.stringify(list));
+    } catch (e) {
+      console.error('Storage video delete error:', e);
     }
   },
 

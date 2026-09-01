@@ -4,32 +4,34 @@ import {
   Image as ImageIcon,
   MessageSquare,
   Film,
+  Video,
   Volume2,
   Trash2,
   Download,
-  Copy,
-  Check,
   Search,
   Maximize2,
   X,
-  Sparkles,
+  Play,
 } from 'lucide-react';
 import { storageService } from '../services/storage';
-import { Conversation, GeneratedImage, VideoStoryboard, AudioItem } from '../types';
+import { Conversation, GeneratedImage, VideoStoryboard, AudioItem, GeneratedVideo } from '../types';
+import { downloadVideoFile } from '../utils/videoUtils';
 
 export const MediaGallery: React.FC = () => {
-  const [activeFilter, setActiveFilter] = useState<'all' | 'images' | 'storyboards' | 'conversations' | 'audios'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'images' | 'videos' | 'storyboards' | 'conversations' | 'audios'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
   const [images, setImages] = useState<GeneratedImage[]>([]);
+  const [videos, setVideos] = useState<GeneratedVideo[]>([]);
   const [storyboards, setStoryboards] = useState<VideoStoryboard[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [audios, setAudios] = useState<AudioItem[]>([]);
   const [previewImage, setPreviewImage] = useState<GeneratedImage | null>(null);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<GeneratedVideo | null>(null);
 
   const loadData = () => {
     setImages(storageService.getImages());
+    setVideos(storageService.getVideos());
     setStoryboards(storageService.getStoryboards());
     setConversations(storageService.getConversations());
     setAudios(storageService.getAudios());
@@ -41,6 +43,11 @@ export const MediaGallery: React.FC = () => {
 
   const handleDeleteImage = (id: string) => {
     storageService.deleteImage(id);
+    loadData();
+  };
+
+  const handleDeleteVideo = (id: string) => {
+    storageService.deleteVideo(id);
     loadData();
   };
 
@@ -59,15 +66,12 @@ export const MediaGallery: React.FC = () => {
     loadData();
   };
 
-  const handleCopy = (id: string, text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
   // Filter items
   const filteredImages = images.filter((img) =>
     img.prompt.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  const filteredVideos = videos.filter((vid) =>
+    vid.prompt.toLowerCase().includes(searchQuery.toLowerCase())
   );
   const filteredStoryboards = storyboards.filter((sb) =>
     sb.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -92,7 +96,7 @@ export const MediaGallery: React.FC = () => {
             <h2 className="text-xl font-bold text-white">المعرض والمحفوظات السابقة</h2>
           </div>
           <p className="text-sm text-slate-300">
-            تصفح جميع أعمالك الفنية وسيناريوهات الفيديو والمحادثات التي قمت بإنشائها في جلساتك.
+            تصفح جميع أعمالك الفنية وفيديوهات Veo وسيناريوهات الفيديو والمحادثات التي قمت بإنشائها.
           </p>
         </div>
 
@@ -119,7 +123,18 @@ export const MediaGallery: React.FC = () => {
               : 'bg-[#11141B] border border-[#1F2937] text-slate-300 hover:bg-[#1F2937]'
           }`}
         >
-          الكل ({images.length + storyboards.length + conversations.length + audios.length})
+          الكل ({images.length + videos.length + storyboards.length + conversations.length + audios.length})
+        </button>
+        <button
+          onClick={() => setActiveFilter('videos')}
+          className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition ${
+            activeFilter === 'videos'
+              ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20'
+              : 'bg-[#11141B] border border-[#1F2937] text-slate-300 hover:bg-[#1F2937]'
+          }`}
+        >
+          <Video className="h-3.5 w-3.5" />
+          <span>فيديوهات Veo ({videos.length})</span>
         </button>
         <button
           onClick={() => setActiveFilter('images')}
@@ -169,6 +184,58 @@ export const MediaGallery: React.FC = () => {
 
       {/* Grid of items */}
       <div className="space-y-6">
+        {/* Veo Videos section */}
+        {(activeFilter === 'all' || activeFilter === 'videos') && filteredVideos.length > 0 && (
+          <div className="space-y-3">
+            <h3 className="text-sm font-bold text-slate-200 flex items-center gap-1.5">
+              <Video className="h-4 w-4 text-blue-400" />
+              <span>فيديوهات Veo 3.1</span>
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              {filteredVideos.map((vid) => (
+                <div
+                  key={vid.id}
+                  className="rounded-xl overflow-hidden bg-[#11141B] border border-[#1F2937] p-3 space-y-2 flex flex-col justify-between"
+                >
+                  <div
+                    onClick={() => setPreviewVideo(vid)}
+                    className="relative aspect-video rounded-lg overflow-hidden bg-black border border-[#1F2937] cursor-pointer group"
+                  >
+                    <video src={vid.url} className="w-full h-full object-cover opacity-85 group-hover:opacity-100" />
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center group-hover:bg-black/20 transition">
+                      <span className="h-9 w-9 rounded-full bg-blue-600 text-white flex items-center justify-center shadow-lg group-hover:scale-110 transition">
+                        <Play className="h-4 w-4 fill-current ml-0.5" />
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-200 line-clamp-2">{vid.prompt}</p>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-[#1F2937] text-xs">
+                    <span className="text-slate-500 font-mono text-[10px]">{vid.resolution} • {vid.aspectRatio}</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => downloadVideoFile(vid.url, `AI_Video_${Date.now()}.mp4`)}
+                        className="p-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white transition"
+                        title="تنزيل MP4"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteVideo(vid.id)}
+                        className="p-1.5 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/40 transition"
+                        title="حذف"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Images section */}
         {(activeFilter === 'all' || activeFilter === 'images') && filteredImages.length > 0 && (
           <div className="space-y-3">
@@ -279,7 +346,7 @@ export const MediaGallery: React.FC = () => {
         )}
       </div>
 
-      {/* Preview Modal */}
+      {/* Preview Image Modal */}
       {previewImage && (
         <div className="fixed inset-0 z-50 bg-[#0A0C10]/90 backdrop-blur-md flex items-center justify-center p-4">
           <div className="relative max-w-3xl w-full bg-[#11141B] border border-[#1F2937] rounded-2xl p-4 shadow-2xl space-y-4">
@@ -300,6 +367,36 @@ export const MediaGallery: React.FC = () => {
               />
             </div>
             <p className="text-xs text-slate-300">{previewImage.prompt}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Preview Video Modal */}
+      {previewVideo && (
+        <div className="fixed inset-0 z-50 bg-[#0A0C10]/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="relative max-w-3xl w-full bg-[#11141B] border border-[#1F2937] rounded-2xl p-4 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-[#1F2937] pb-2">
+              <h4 className="text-sm font-bold text-white">مشغل فيديو Veo</h4>
+              <button
+                onClick={() => setPreviewVideo(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex items-center justify-center aspect-video rounded-xl bg-black overflow-hidden">
+              <video src={previewVideo.url} controls autoPlay className="w-full h-full object-contain" />
+            </div>
+            <div className="flex items-center justify-between pt-2">
+              <p className="text-xs text-slate-300 line-clamp-1">{previewVideo.prompt}</p>
+              <button
+                onClick={() => downloadVideoFile(previewVideo.url, `AI_Video_${Date.now()}.mp4`)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition shadow"
+              >
+                <Download className="h-4 w-4" />
+                <span>تنزيل MP4</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
