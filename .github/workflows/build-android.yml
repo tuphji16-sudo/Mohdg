@@ -47,17 +47,20 @@ jobs:
       - name: Build Debug APK
         run: |
           cd android
-          gradle assembleDebug --stacktrace --no-daemon
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
 
       - name: Build Release APK
         run: |
           cd android
-          gradle assembleRelease --stacktrace --no-daemon || gradle assembleDebug --stacktrace --no-daemon
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace || ./gradlew assembleDebug --stacktrace
 
       - name: Build Release AAB (Google Play Bundle)
         run: |
           cd android
-          gradle bundleRelease --stacktrace --no-daemon || gradle bundleDebug --stacktrace --no-daemon
+          chmod +x gradlew
+          ./gradlew bundleRelease --stacktrace || ./gradlew bundleDebug --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
