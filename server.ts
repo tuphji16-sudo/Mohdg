@@ -60,8 +60,8 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const candidateModels = mode === "deep" 
-      ? ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"]
-      : ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"];
+      ? ["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash"]
+      : ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.7-flash"];
 
     // Format contents with role sanitization
     const validMessages = messages.filter((m: any) => m && m.content && m.content.trim().length > 0);

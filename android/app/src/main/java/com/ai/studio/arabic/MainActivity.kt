@@ -14,7 +14,7 @@ import com.ai.studio.arabic.ui.theme.AIStudioArabicTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        UserPreferences.getApiKey(this)
+        UserPreferences.init(this)
         enableEdgeToEdge()
         setContent {
             AIStudioArabicTheme {

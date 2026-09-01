@@ -1,5 +1,6 @@
 package com.ai.studio.arabic.data.local
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 
@@ -10,8 +11,20 @@ object UserPreferences {
     @Volatile
     private var inMemoryApiKey: String? = null
 
+    @SuppressLint("StaticFieldLeak")
+    @Volatile
+    private var appContext: Context? = null
+
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    fun init(context: Context) {
+        appContext = context.applicationContext
+        val stored = getPrefs(context.applicationContext).getString(KEY_CUSTOM_API_KEY, "") ?: ""
+        if (stored.isNotBlank()) {
+            inMemoryApiKey = stored.trim()
+        }
     }
 
     fun getApiKey(context: Context? = null): String {
@@ -19,8 +32,9 @@ object UserPreferences {
         if (!memoryKey.isNullOrBlank()) {
             return memoryKey.trim()
         }
-        if (context != null) {
-            val stored = getPrefs(context).getString(KEY_CUSTOM_API_KEY, "") ?: ""
+        val targetContext = context?.applicationContext ?: appContext
+        if (targetContext != null) {
+            val stored = getPrefs(targetContext).getString(KEY_CUSTOM_API_KEY, "") ?: ""
             if (stored.isNotBlank()) {
                 inMemoryApiKey = stored.trim()
                 return stored.trim()
@@ -32,7 +46,9 @@ object UserPreferences {
     fun setApiKey(context: Context?, key: String) {
         val trimmed = key.trim()
         inMemoryApiKey = trimmed
-        context?.let {
+        val targetContext = context?.applicationContext ?: appContext
+        targetContext?.let {
+            appContext = it
             getPrefs(it).edit().putString(KEY_CUSTOM_API_KEY, trimmed).apply()
         }
     }

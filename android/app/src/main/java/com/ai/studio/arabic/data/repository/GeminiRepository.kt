@@ -392,6 +392,22 @@ class GeminiRepository(private val context: Context? = null) {
                                     } catch (_: Exception) {}
                                 }
 
+                                // Check for invalid API key across any status code
+                                val isApiKeyInvalid = response.code == 403 || 
+                                    detailedApiMessage.contains("API key not valid", ignoreCase = true) ||
+                                    detailedApiMessage.contains("API_KEY_INVALID", ignoreCase = true) ||
+                                    detailedApiMessage.contains("unregistered callers", ignoreCase = true)
+
+                                if (isApiKeyInvalid) {
+                                    Log.e(TAG, "Invalid API key detected on model $modelName: $detailedApiMessage")
+                                    val msg = if (detailedApiMessage.isNotBlank()) {
+                                        "⚠️ خطأ في مفتاح Gemini API: $detailedApiMessage\nيرجى تحديث المفتاح عبر أيقونة 🔑 في الأعلى."
+                                    } else {
+                                        GeminiConfig.MSG_AUTH_ERROR
+                                    }
+                                    return@withLock Result.failure(Exception(msg))
+                                }
+
                                 // 429 Rate Limit Handling: Retry with backoff or fallback to next model
                                 if (isRateLimited) {
                                     if (attempt < maxRetries) {
@@ -419,7 +435,11 @@ class GeminiRepository(private val context: Context? = null) {
                                     if (verifiedActiveModel == modelName) {
                                         verifiedActiveModel = null
                                     }
-                                    lastErrorMessage = "النموذج $modelName غير متاح حالياً (404)."
+                                    lastErrorMessage = if (detailedApiMessage.isNotBlank()) {
+                                        "النموذج $modelName غير متاح (404): $detailedApiMessage"
+                                    } else {
+                                        "النموذج $modelName غير متاح حالياً (404)."
+                                    }
                                     shouldTryNextModel = true
                                     break
                                 }
@@ -434,17 +454,6 @@ class GeminiRepository(private val context: Context? = null) {
                                     }
                                     shouldTryNextModel = true
                                     break
-                                }
-
-                                // 403 Forbidden (API Key issue)
-                                if (response.code == 403) {
-                                    Log.e(TAG, "HTTP 403 on model $modelName: $detailedApiMessage")
-                                    val msg = if (detailedApiMessage.isNotBlank()) {
-                                        "خطأ في صلاحية مفتاح Gemini API (HTTP 403): $detailedApiMessage"
-                                    } else {
-                                        GeminiConfig.MSG_AUTH_ERROR
-                                    }
-                                    return@withLock Result.failure(Exception(msg))
                                 }
 
                                 // 500, 503 Server Busy
