@@ -6,6 +6,7 @@ import { VideoStudio } from './components/VideoStudio';
 import { AudioVoiceStudio } from './components/AudioVoiceStudio';
 import { MediaGallery } from './components/MediaGallery';
 import { QuickTemplatesModal } from './components/QuickTemplatesModal';
+import { SettingsModal } from './components/SettingsModal';
 import { ActiveTab, PromptTemplate } from './types';
 import { isNative } from './utils/nativeUtils';
 import { StatusBar, Style } from '@capacitor/status-bar';
@@ -14,6 +15,7 @@ import { App as CapApp } from '@capacitor/app';
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat');
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [initialPrompt, setInitialPrompt] = useState<string>('');
 
   // Native Android StatusBar and hardware back button configuration
@@ -27,7 +29,9 @@ export default function App() {
       }
 
       const backListener = CapApp.addListener('backButton', ({ canGoBack }) => {
-        if (isTemplatesOpen) {
+        if (isSettingsOpen) {
+          setIsSettingsOpen(false);
+        } else if (isTemplatesOpen) {
           setIsTemplatesOpen(false);
         } else if (activeTab !== 'chat') {
           setActiveTab('chat');
@@ -40,7 +44,7 @@ export default function App() {
         backListener.then((sub) => sub.remove());
       };
     }
-  }, [isTemplatesOpen, activeTab]);
+  }, [isSettingsOpen, isTemplatesOpen, activeTab]);
 
   const handleSelectTemplate = (template: PromptTemplate) => {
     setActiveTab(template.targetTab);
@@ -54,6 +58,7 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onOpenTemplates={() => setIsTemplatesOpen(true)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
       {/* Main Studio Content Area */}
@@ -89,6 +94,12 @@ export default function App() {
         isOpen={isTemplatesOpen}
         onClose={() => setIsTemplatesOpen(false)}
         onSelectTemplate={handleSelectTemplate}
+      />
+
+      {/* Settings & API Key Modal */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
       />
     </div>
   );

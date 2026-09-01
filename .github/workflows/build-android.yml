@@ -39,6 +39,10 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Build Web Application
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VITE_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL || secrets.BACKEND_API_URL }}
         run: npm run build
 
       - name: Sync Capacitor to Android

@@ -8,6 +8,7 @@ import {
   Sparkles,
   LayoutGrid,
   Zap,
+  Settings,
 } from 'lucide-react';
 import { ActiveTab } from '../types';
 
@@ -15,12 +16,14 @@ interface NavbarProps {
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
   onOpenTemplates: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
   onOpenTemplates,
+  onOpenSettings,
 }) => {
   const tabs = [
     {
@@ -120,7 +123,19 @@ export const Navbar: React.FC<NavbarProps> = ({
         </nav>
 
         {/* Action Controls */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
+          {onOpenSettings && (
+            <button
+              id="open-settings-btn"
+              onClick={onOpenSettings}
+              className="flex items-center gap-1.5 rounded-xl bg-[#11141B] px-3 py-2 text-xs sm:text-sm font-medium text-slate-300 border border-[#1F2937] hover:bg-[#1F2937] hover:text-white transition-all shadow-sm"
+              title="إعدادات المفتاح والخادم"
+            >
+              <Settings className="h-4 w-4 text-blue-400" />
+              <span className="hidden lg:inline">الإعدادات</span>
+            </button>
+          )}
+
           <button
             id="open-templates-btn"
             onClick={onOpenTemplates}
