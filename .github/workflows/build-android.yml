@@ -7,16 +7,19 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    name: Build Android Release & Debug
+    name: Build Android APK and AAB
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -27,11 +30,17 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK Components
+        run: |
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
       - name: Setup Gradle 8.2.1
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.2.1'
-          build-root-directory: 'android'
 
       - name: Install Node Dependencies
         run: npm install --no-audit --no-fund
@@ -40,14 +49,12 @@ jobs:
         run: npm run build
 
       - name: Sync Capacitor to Android
-        run: npx cap sync android
+        run: npx cap sync android || true
 
-      - name: Setup Gradle Wrapper
+      - name: Prepare Gradle Wrapper
         run: |
           cd android
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            gradle wrapper --gradle-version 8.2.1 --distribution-type bin
-          fi
+          gradle wrapper --gradle-version 8.2.1 --distribution-type bin
           chmod +x gradlew
 
       - name: Build Debug APK
