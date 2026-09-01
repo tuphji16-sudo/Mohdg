@@ -30,17 +30,8 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK Components
-        run: |
-          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
-
-      - name: Setup Gradle 8.2.1
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.2.1'
 
       - name: Install Node Dependencies
         run: npm install --no-audit --no-fund
@@ -49,28 +40,22 @@ jobs:
         run: npm run build
 
       - name: Sync Capacitor to Android
-        run: npx cap sync android || true
-
-      - name: Prepare Gradle Wrapper
-        run: |
-          cd android
-          gradle wrapper --gradle-version 8.2.1 --distribution-type bin
-          chmod +x gradlew
+        run: npx cap sync android
 
       - name: Build Debug APK
         run: |
           cd android
-          ./gradlew assembleDebug --stacktrace --no-daemon
+          gradle :app:assembleDebug --stacktrace --no-daemon
 
       - name: Build Release APK
         run: |
           cd android
-          ./gradlew assembleRelease --stacktrace --no-daemon || ./gradlew assembleDebug --stacktrace --no-daemon
+          gradle :app:assembleRelease --stacktrace --no-daemon || gradle :app:assembleDebug --stacktrace --no-daemon
 
       - name: Build Release AAB (Google Play Bundle)
         run: |
           cd android
-          ./gradlew bundleRelease --stacktrace --no-daemon || ./gradlew bundleDebug --stacktrace --no-daemon
+          gradle :app:bundleRelease --stacktrace --no-daemon || gradle :app:bundleDebug --stacktrace --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
