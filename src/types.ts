@@ -2,6 +2,24 @@ export type ActiveTab = 'chat' | 'image' | 'video' | 'audio' | 'gallery';
 
 export type ChatMode = 'balanced' | 'fast' | 'deep' | 'creative' | 'code';
 
+export interface ChatMessageMedia {
+  type: 'image' | 'video';
+  url?: string;
+  thumbnailUrl?: string;
+  prompt?: string;
+  enhancedPrompt?: string;
+  aspectRatio?: string;
+  style?: string;
+  resolution?: string;
+  operationName?: string;
+  status?: 'generating' | 'completed' | 'failed';
+  statusMessage?: string;
+  error?: string;
+  downloadUrl?: string;
+  filename?: string;
+  sourceImage?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
@@ -10,6 +28,8 @@ export interface ChatMessage {
   images?: string[]; // base64 urls
   isStreaming?: boolean;
   useSearch?: boolean;
+  mediaType?: 'text' | 'image' | 'video';
+  media?: ChatMessageMedia;
 }
 
 export interface Conversation {
