@@ -19,6 +19,7 @@ import {
 import { AspectRatio, GeneratedImage, ImageStyle } from '../types';
 import { apiService } from '../services/api';
 import { storageService } from '../services/storage';
+import { downloadImageFile, shareImage } from '../utils/imageUtils';
 
 interface ImageStudioProps {
   initialPrompt?: string;
@@ -41,6 +42,7 @@ export const ImageStudio: React.FC<ImageStudioProps> = ({
   const [sourceImage, setSourceImage] = useState<string | null>(null);
   const [previewModalImg, setPreviewModalImg] = useState<GeneratedImage | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [enhancedData, setEnhancedData] = useState<{
     enhancedArabic?: string;
     enhancedEnglish?: string;
@@ -48,6 +50,13 @@ export const ImageStudio: React.FC<ImageStudioProps> = ({
   } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3500);
+  };
 
   // Sync initial prompt from template if passed
   React.useEffect(() => {
@@ -158,35 +167,57 @@ export const ImageStudio: React.FC<ImageStudioProps> = ({
         setCurrentImage(newImg);
         setGeneratedImages((prev) => [newImg, ...prev]);
         storageService.saveImage(newImg);
+        showToast('✓ تم توليد الصورة بنجاح وحفظها');
       } else {
-        alert(result.message || result.description || 'لم يتم استرجاع الصورة من النموذج.');
+        showToast(`⚠️ ${result.message || result.description || 'لم يتم استرجاع الصورة من النموذج.'}`);
       }
     } catch (err: any) {
-      alert(`حدث خطأ أثناء إنشاء الصورة: ${err.message}`);
+      showToast(`⚠️ حدث خطأ أثناء إنشاء الصورة: ${err.message}`);
     } finally {
       setIsGenerating(false);
     }
   };
 
   // Download image
-  const handleDownload = (imgUrl: string, promptText: string) => {
-    const link = document.createElement('a');
-    link.href = imgUrl;
-    link.download = `nebras-ai-${Date.now()}.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleDownload = async (imgUrl: string, promptText?: string) => {
+    try {
+      showToast('⏳ جاري تنزيل الصورة...');
+      await downloadImageFile(imgUrl, `Nebras_AI_${Date.now()}.png`);
+      showToast('✓ تم تنزيل الصورة بنجاح');
+    } catch (err: any) {
+      console.error('Download image error:', err);
+      showToast('⚠️ فشل تنزيل الصورة');
+    }
+  };
+
+  // Share image
+  const handleShare = async (imgUrl: string, promptText?: string) => {
+    try {
+      const res = await shareImage(imgUrl, 'صورة بالذكاء الاصطناعي', promptText);
+      showToast(res.message);
+    } catch (err: any) {
+      showToast('⚠️ تعذر إتمام المشاركة');
+    }
   };
 
   // Copy prompt
   const handleCopyPrompt = (text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedPrompt(true);
+    showToast('✓ تم نسخ البرومبت');
     setTimeout(() => setCopiedPrompt(false), 2000);
   };
 
   return (
     <div id="image-studio-container" className="max-w-6xl mx-auto w-full px-2 sm:px-4 py-4 space-y-6">
+      {/* Toast Notification Alert */}
+      {toastMessage && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-[#11141B]/95 text-blue-300 border border-blue-500/40 px-4 py-2.5 rounded-2xl shadow-2xl backdrop-blur-md text-xs sm:text-sm font-medium animate-in fade-in slide-in-from-top-4 duration-200">
+          <Sparkles className="h-4 w-4 text-emerald-400 shrink-0" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Top Banner / Intro */}
       <div className="rounded-2xl bg-[#11141B] p-5 border border-[#1F2937] shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
@@ -451,6 +482,13 @@ export const ImageStudio: React.FC<ImageStudioProps> = ({
                     >
                       <Download className="h-3.5 w-3.5 text-blue-400" />
                       <span>تحميل PNG</span>
+                    </button>
+                    <button
+                      onClick={() => handleShare(currentImage.url, currentImage.prompt)}
+                      className="flex items-center gap-1.5 text-xs font-medium text-slate-200 bg-[#1F2937] hover:bg-slate-700 px-3 py-1.5 rounded-lg transition"
+                    >
+                      <Share2 className="h-3.5 w-3.5 text-blue-400" />
+                      <span>مشاركة</span>
                     </button>
                     <button
                       onClick={() => handleCopyPrompt(currentImage.prompt)}

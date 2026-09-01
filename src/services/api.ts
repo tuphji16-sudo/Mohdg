@@ -6,8 +6,66 @@ export interface ChatStreamCallbacks {
   onError: (error: string) => void;
 }
 
+/**
+ * Resolves the backend server API base URL.
+ * Automatically points to the live backend for Android Native Capacitor apps,
+ * and uses origin / relative paths in normal Web browsers.
+ */
+export const getApiBaseUrl = (): string => {
+  // Check custom configured URL if any
+  try {
+    const customUrl = typeof localStorage !== 'undefined' ? localStorage.getItem('nebras_server_url') : null;
+    if (customUrl && customUrl.trim()) {
+      return customUrl.trim().replace(/\/$/, '');
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  // If in browser on normal web hosting
+  if (typeof window !== 'undefined' && window.location && window.location.origin) {
+    const origin = window.location.origin;
+    if (!origin.includes('localhost') && !origin.includes('capacitor://') && origin.startsWith('http')) {
+      return origin;
+    }
+  }
+
+  // Environment variable
+  const metaEnv = (import.meta as any).env;
+  if (metaEnv && metaEnv.VITE_API_URL) {
+    return (metaEnv.VITE_API_URL as string).replace(/\/$/, '');
+  }
+
+  // Production Cloud Run Applet URL for Android Native build
+  return 'https://ais-pre-c7jbx2vrx2dedrkmtbmq3k-429081060331.europe-west2.run.app';
+};
+
+/**
+ * Safely parse JSON from fetch response, handling unexpected HTML error pages gracefully
+ */
+async function safeParseResponse(response: Response): Promise<any> {
+  const contentType = response.headers.get('content-type') || '';
+  const text = await response.text();
+
+  if (!contentType.includes('application/json') && text.trim().startsWith('<')) {
+    if (!response.ok) {
+      throw new Error(`خطأ في الخادم (رمز الحالة ${response.status}). يرجى التحقق من اتصال الإنترنت.`);
+    }
+    throw new Error('استجاب الخادم بصفحة غير متوقعة. يرجى إعادة المحاولة.');
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (!response.ok) {
+      throw new Error(`خطأ في الاستجابة (${response.status}): ${text.slice(0, 120)}`);
+    }
+    throw new Error('تعذر معالجة استجابة الخادم.');
+  }
+}
+
 export const apiService = {
-  // Stream Chat
+  // 1. Stream Chat
   streamChat: async (
     messages: ChatMessage[],
     mode: ChatMode,
@@ -16,9 +74,13 @@ export const apiService = {
     callbacks: ChatStreamCallbacks
   ) => {
     try {
-      const response = await fetch('/api/chat', {
+      const baseUrl = getApiBaseUrl();
+      const response = await fetch(`${baseUrl}/api/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream, application/json',
+        },
         body: JSON.stringify({
           messages: messages.map((m) => ({ role: m.role, content: m.content })),
           mode,
@@ -28,8 +90,8 @@ export const apiService = {
       });
 
       if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || `Error: ${response.statusText}`);
+        const errorData = await safeParseResponse(response).catch((e) => ({ error: e.message }));
+        throw new Error(errorData.error || `خطأ في الاتصال (${response.status})`);
       }
 
       const reader = response.body?.getReader();
@@ -64,7 +126,7 @@ export const apiService = {
                 return;
               }
             } catch {
-              // ignore parse errors on partial frames
+              // ignore partial parse errors
             }
           }
         }
@@ -75,16 +137,20 @@ export const apiService = {
     }
   },
 
-  // Generate Image
+  // 2. Generate Image
   generateImage: async (
     prompt: string,
     aspectRatio: AspectRatio = '1:1',
     style: ImageStyle = 'realistic',
     sourceImage?: string | null
   ) => {
-    const response = await fetch('/api/generate-image', {
+    const baseUrl = getApiBaseUrl();
+    const response = await fetch(`${baseUrl}/api/generate-image`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       body: JSON.stringify({
         prompt,
         aspectRatio,
@@ -93,23 +159,27 @@ export const apiService = {
       }),
     });
 
-    const data = await response.json();
+    const data = await safeParseResponse(response);
     if (!response.ok) {
       throw new Error(data.error || 'فشل توليد الصورة');
     }
     return data;
   },
 
-  // Video Storyboard Generator
+  // 3. Video Storyboard Generator
   generateStoryboard: async (
     topic: string,
     duration: string = '30s',
     tone: string = 'cinematic',
     targetAudience: string = 'عام'
   ): Promise<{ success: boolean; storyboard: VideoStoryboard }> => {
-    const response = await fetch('/api/video-storyboard', {
+    const baseUrl = getApiBaseUrl();
+    const response = await fetch(`${baseUrl}/api/video-storyboard`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       body: JSON.stringify({
         topic,
         duration,
@@ -118,23 +188,27 @@ export const apiService = {
       }),
     });
 
-    const data = await response.json();
+    const data = await safeParseResponse(response);
     if (!response.ok) {
       throw new Error(data.error || 'فشل كتابة سيناريو الفيديو');
     }
     return data;
   },
 
-  // Veo Video Generation
+  // 4. Veo Video Generation (Start Job)
   generateVeoVideo: async (
     prompt: string,
     aspectRatio: '16:9' | '9:16' = '16:9',
     resolution: '720p' | '1080p' = '720p',
     image?: string | null
   ) => {
-    const response = await fetch('/api/generate-video', {
+    const baseUrl = getApiBaseUrl();
+    const response = await fetch(`${baseUrl}/api/generate-video`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       body: JSON.stringify({
         prompt,
         aspectRatio,
@@ -143,55 +217,77 @@ export const apiService = {
       }),
     });
 
-    const data = await response.json();
+    const data = await safeParseResponse(response);
     if (!response.ok) {
       throw new Error(data.error || 'فشل طلب توليد الفيديو');
     }
     return data;
   },
 
-  // Check Veo Status
+  // 5. Check Veo Status (Poll Job)
   checkVideoStatus: async (operationName: string) => {
-    const response = await fetch('/api/video-status', {
+    const baseUrl = getApiBaseUrl();
+    const response = await fetch(`${baseUrl}/api/video-status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       body: JSON.stringify({ operationName }),
     });
 
-    const data = await response.json();
+    const data = await safeParseResponse(response);
     if (!response.ok) {
       throw new Error(data.error || 'فشل فحص حالة الفيديو');
     }
+
+    // Ensure download and proxy URLs include base URL if relative
+    if (data.downloadUrl && data.downloadUrl.startsWith('/api/')) {
+      data.downloadUrl = `${baseUrl}${data.downloadUrl}`;
+    }
+    if (data.videoUrl && data.videoUrl.startsWith('/api/')) {
+      data.videoUrl = `${baseUrl}${data.videoUrl}`;
+    }
+
     return data;
   },
 
-  // TTS
+  // 6. Text-to-Speech
   generateTTS: async (text: string, voice: string = 'Kore') => {
-    const response = await fetch('/api/tts', {
+    const baseUrl = getApiBaseUrl();
+    const response = await fetch(`${baseUrl}/api/tts`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       body: JSON.stringify({ text, voice }),
     });
 
-    const data = await response.json();
+    const data = await safeParseResponse(response);
     if (!response.ok) {
       throw new Error(data.error || 'فشل توليد الصوت');
     }
     return data;
   },
 
-  // Enhance Prompt
+  // 7. Enhance Prompt
   enhancePrompt: async (prompt: string, type: 'image' | 'video' | 'chat' | 'code' = 'image') => {
-    const response = await fetch('/api/enhance-prompt', {
+    const baseUrl = getApiBaseUrl();
+    const response = await fetch(`${baseUrl}/api/enhance-prompt`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       body: JSON.stringify({ prompt, type }),
     });
 
-    const data = await response.json();
+    const data = await safeParseResponse(response);
     if (!response.ok) {
       throw new Error(data.error || 'فشل ترقية البرومبت');
     }
     return data.data;
   },
 };
+

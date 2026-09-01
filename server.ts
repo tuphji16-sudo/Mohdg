@@ -13,6 +13,17 @@ const PORT = 3000;
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+// Enable CORS for web and Android native Capacitor clients
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-goog-api-key");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Initialize Gemini Client
 const apiKey = process.env.GEMINI_API_KEY || "";
 const ai = new GoogleGenAI({
@@ -219,38 +230,58 @@ app.post("/api/generate-image", async (req, res) => {
 
     parts.push({ text: enhancedPrompt });
 
-    const modelName = "gemini-3.1-flash-image";
-
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: { parts },
-      config: {
-        imageConfig: {
-          aspectRatio: aspectRatio as any,
-          imageSize: "1K",
-        },
-      },
-    });
-
+    const candidateImageModels = ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"];
     let imageUrl: string | null = null;
     let description: string = "";
+    let lastImageError: any = null;
 
-    if (response.candidates?.[0]?.content?.parts) {
-      for (const part of response.candidates[0].content.parts) {
-        if (part.inlineData) {
-          imageUrl = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
-        } else if (part.text) {
-          description += part.text;
+    for (const modelName of candidateImageModels) {
+      try {
+        const config: any = {};
+        if (modelName === "gemini-3.1-flash-image") {
+          config.imageConfig = {
+            aspectRatio: aspectRatio as any,
+            imageSize: "1K",
+          };
+        } else {
+          config.imageConfig = {
+            aspectRatio: aspectRatio as any,
+          };
         }
+
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: { parts },
+          config,
+        });
+
+        if (response.candidates?.[0]?.content?.parts) {
+          for (const part of response.candidates[0].content.parts) {
+            if (part.inlineData) {
+              imageUrl = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
+            } else if (part.text) {
+              description += part.text;
+            }
+          }
+        }
+
+        if (imageUrl) {
+          break; // Found generated image
+        }
+      } catch (imgErr: any) {
+        console.warn(`Model ${modelName} failed for image generation:`, imgErr?.message || imgErr);
+        lastImageError = imgErr;
       }
     }
 
     if (!imageUrl) {
-      // Fallback: If image wasn't returned in inlineData, try flash-lite or text description
-      return res.json({
-        success: false,
-        message: "لم يتم إنشاء الصورة بشكل مباشر، إليك الوصف البصري المقترح من النموذج",
-        description: description || "تعذر توليد الصورة بالمعايير الحالية.",
+      if (lastImageError) {
+        return res.status(500).json({
+          error: lastImageError.message || "تعذر إنشاء الصورة من مزود الذكاء الاصطناعي.",
+        });
+      }
+      return res.status(422).json({
+        error: description || "لم يرجع النموذج صورة صالحة. يرجى تجربة وصف آخر.",
       });
     }
 
