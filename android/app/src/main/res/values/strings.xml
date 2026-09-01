@@ -1,8 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">منصة الذكاء الاصطناعي</string>
-    <string name="tab_chat">المحادثة</string>
-    <string name="tab_image">الصور</string>
-    <string name="tab_video">الفيديو</string>
-    <string name="tab_audio">الصوت</string>
-    <string name="tab_gallery">المعرض</string>
+    <string name="title_activity_main">منصة الذكاء الاصطناعي</string>
+    <string name="package_name">com.aiplatform.ai</string>
+    <string name="custom_url_scheme">com.aiplatform.ai</string>
 </resources>

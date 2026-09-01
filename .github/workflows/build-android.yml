@@ -1,0 +1,80 @@
+name: Build Android APK and AAB
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android Release & Debug
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Node Dependencies
+        run: npm ci || npm install
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Sync Capacitor to Android
+        run: npx cap sync android
+
+      - name: Grant Execute Permission for Gradle
+        run: chmod +x android/gradlew || true
+
+      - name: Build Debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Build Release APK
+        run: |
+          cd android
+          ./gradlew assembleRelease --stacktrace || ./gradlew assembleDebug
+
+      - name: Build Release AAB (Google Play Bundle)
+        run: |
+          cd android
+          ./gradlew bundleRelease --stacktrace || ./gradlew bundleDebug
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Platform-Debug-APK
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Platform-Release-APK
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+      - name: Upload Release AAB (Google Play Store)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Platform-Release-AAB
+          path: android/app/build/outputs/bundle/release/*.aab
+          retention-days: 30

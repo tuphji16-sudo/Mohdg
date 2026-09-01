@@ -3,6 +3,8 @@
  * Handles MP4 file downloads, Blob creation, CORS fallbacks, and Web Share API.
  */
 
+import { isNative, saveFileToNativeDevice, shareNativeContent } from './nativeUtils';
+
 export function generateVideoFilename(): string {
   const now = new Date();
   const year = now.getFullYear();
@@ -11,12 +13,13 @@ export function generateVideoFilename(): string {
   const hours = String(now.getHours()).padStart(2, '0');
   const minutes = String(now.getMinutes()).padStart(2, '0');
   const seconds = String(now.getSeconds()).padStart(2, '0');
-  return `AI_Video_${year}${month}${day}_${hours}${minutes}${seconds}.mp4`;
+  return `AI_Video_${year}-${month}-${day}_${hours}-${minutes}-${seconds}.mp4`;
 }
 
 /**
  * Downloads a video file as an actual MP4 file to the user's device (Desktop / Android / iOS).
  * - Converts raw URLs or Google File URIs to Blobs when needed.
+ * - Handles Android native file saving through Capacitor Filesystem.
  * - Handles CORS by routing through server proxy if necessary.
  * - Ensures correct .mp4 extension and video/mp4 MIME type.
  */
@@ -29,6 +32,16 @@ export async function downloadVideoFile(
   }
 
   const targetFilename = filename || generateVideoFilename();
+
+  // Native Android Capacitor Download
+  if (isNative()) {
+    try {
+      await saveFileToNativeDevice(videoUrl, targetFilename);
+      return;
+    } catch (nativeErr) {
+      console.warn('Native download failed, trying web fallback:', nativeErr);
+    }
+  }
 
   // Case 1: Data URL (Base64)
   if (videoUrl.startsWith('data:')) {
@@ -108,8 +121,7 @@ function triggerBlobDownload(blob: Blob, filename: string): void {
 }
 
 /**
- * Shares video using Web Share API (with file attachments when supported)
- * or falls back to copying link/text.
+ * Shares video using Android Native Share / Web Share API / Clipboard
  */
 export async function shareVideo(
   videoUrl: string,
@@ -118,7 +130,25 @@ export async function shareVideo(
 ): Promise<{ success: boolean; message: string }> {
   const filename = generateVideoFilename();
 
-  // Try Web Share API with file first
+  // 1. Native Capacitor Share (Android / iOS)
+  if (isNative()) {
+    try {
+      const { uri } = await saveFileToNativeDevice(videoUrl, filename);
+      const shared = await shareNativeContent({
+        title,
+        text: prompt ? `✨ تم إنشاء هذا الفيديو باستخدام Veo 3.1:\n"${prompt}"` : title,
+        files: [uri],
+        dialogTitle: 'مشاركة الفيديو',
+      });
+      if (shared) {
+        return { success: true, message: '✓ تمت مشاركة الفيديو بنجاح' };
+      }
+    } catch (nativeShareErr) {
+      console.warn('Native share failed:', nativeShareErr);
+    }
+  }
+
+  // 2. Web Share API with file first
   if (typeof navigator !== 'undefined' && navigator.share) {
     try {
       let shareFile: File | null = null;
@@ -163,7 +193,7 @@ export async function shareVideo(
     }
   }
 
-  // Fallback: Copy link or prompt to clipboard
+  // 3. Fallback: Copy link or prompt to clipboard
   try {
     const textToCopy = videoUrl.startsWith('http') 
       ? videoUrl 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { ChatStudio } from './components/ChatStudio';
 import { ImageStudio } from './components/ImageStudio';
@@ -7,11 +7,40 @@ import { AudioVoiceStudio } from './components/AudioVoiceStudio';
 import { MediaGallery } from './components/MediaGallery';
 import { QuickTemplatesModal } from './components/QuickTemplatesModal';
 import { ActiveTab, PromptTemplate } from './types';
+import { isNative } from './utils/nativeUtils';
+import { StatusBar, Style } from '@capacitor/status-bar';
+import { App as CapApp } from '@capacitor/app';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat');
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const [initialPrompt, setInitialPrompt] = useState<string>('');
+
+  // Native Android StatusBar and hardware back button configuration
+  useEffect(() => {
+    if (isNative()) {
+      try {
+        StatusBar.setStyle({ style: Style.Dark });
+        StatusBar.setBackgroundColor({ color: '#0A0D14' });
+      } catch (e) {
+        console.log('StatusBar error:', e);
+      }
+
+      const backListener = CapApp.addListener('backButton', ({ canGoBack }) => {
+        if (isTemplatesOpen) {
+          setIsTemplatesOpen(false);
+        } else if (activeTab !== 'chat') {
+          setActiveTab('chat');
+        } else if (!canGoBack) {
+          CapApp.exitApp();
+        }
+      });
+
+      return () => {
+        backListener.then((sub) => sub.remove());
+      };
+    }
+  }, [isTemplatesOpen, activeTab]);
 
   const handleSelectTemplate = (template: PromptTemplate) => {
     setActiveTab(template.targetTab);

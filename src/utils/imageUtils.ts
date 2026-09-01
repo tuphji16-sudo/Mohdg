@@ -3,6 +3,8 @@
  * Provides download, blob conversion, Android-friendly saving, and sharing.
  */
 
+import { isNative, saveFileToNativeDevice, shareNativeContent } from './nativeUtils';
+
 export function generateImageFilename(extension = 'png'): string {
   const now = new Date();
   const year = now.getFullYear();
@@ -11,7 +13,7 @@ export function generateImageFilename(extension = 'png'): string {
   const hours = String(now.getHours()).padStart(2, '0');
   const minutes = String(now.getMinutes()).padStart(2, '0');
   const seconds = String(now.getSeconds()).padStart(2, '0');
-  return `AI_Image_${year}${month}${day}_${hours}${minutes}${seconds}.${extension}`;
+  return `AI_Image_${year}-${month}-${day}_${hours}-${minutes}-${seconds}.${extension}`;
 }
 
 /**
@@ -26,6 +28,16 @@ export async function downloadImageFile(
   }
 
   const targetFilename = filename || generateImageFilename('png');
+
+  // Native Android Capacitor Download
+  if (isNative()) {
+    try {
+      await saveFileToNativeDevice(imageUrl, targetFilename);
+      return;
+    } catch (nativeErr) {
+      console.warn('Native image download failed, falling back to web:', nativeErr);
+    }
+  }
 
   // Case 1: Data URL
   if (imageUrl.startsWith('data:')) {
@@ -92,7 +104,7 @@ function triggerBlobDownload(blob: Blob, filename: string): void {
 }
 
 /**
- * Shares an image using Web Share API or copies URL/description
+ * Shares an image using Native Android Share Sheet / Web Share API / Clipboard
  */
 export async function shareImage(
   imageUrl: string,
@@ -101,6 +113,25 @@ export async function shareImage(
 ): Promise<{ success: boolean; message: string }> {
   const filename = generateImageFilename('png');
 
+  // 1. Native Android Share
+  if (isNative()) {
+    try {
+      const { uri } = await saveFileToNativeDevice(imageUrl, filename);
+      const shared = await shareNativeContent({
+        title,
+        text: prompt ? `✨ تم إنشاء هذه الصورة بالذكاء الاصطناعي:\n"${prompt}"` : title,
+        files: [uri],
+        dialogTitle: 'مشاركة الصورة',
+      });
+      if (shared) {
+        return { success: true, message: '✓ تمت مشاركة الصورة بنجاح' };
+      }
+    } catch (nativeErr) {
+      console.warn('Native image share failed:', nativeErr);
+    }
+  }
+
+  // 2. Web Share API
   if (typeof navigator !== 'undefined' && navigator.share) {
     try {
       let shareFile: File | null = null;
@@ -143,7 +174,7 @@ export async function shareImage(
   // Fallback to clipboard
   try {
     await navigator.clipboard.writeText(
-      `${title}\n${prompt ? `الوصف: ${prompt}` : ''}\nتم الإنشاء بواسطة نبراس AI`
+      `${title}\n${prompt ? `الوصف: ${prompt}` : ''}\nتم الإنشاء بواسطة منصة الذكاء الاصطناعي`
     );
     return { success: true, message: '✓ تم نسخ وصف الصورة إلى الحافظة' };
   } catch {

@@ -1,0 +1,5 @@
+rootProject.name = 'AI Platform'
+include ':app'
+
+// Auto-include Capacitor Android plugins
+apply from: 'capacitor.settings.gradle'
