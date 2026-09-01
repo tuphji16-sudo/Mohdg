@@ -59,22 +59,27 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    const modelName = mode === "deep" ? "gemini-3.1-pro-preview" : "gemini-3.7-flash";
+    const candidateModels = mode === "deep" 
+      ? ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"]
+      : ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"];
 
-    // Format contents
+    // Format contents with role sanitization
+    const validMessages = messages.filter((m: any) => m && m.content && m.content.trim().length > 0);
+    // Skip any leading model greetings so first message is from user
+    while (validMessages.length > 0 && validMessages[0].role !== "user") {
+      validMessages.shift();
+    }
+
     const contents: any[] = [];
-
-    // Map conversation history
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
+    for (let i = 0; i < validMessages.length; i++) {
+      const msg = validMessages[i];
       const role = msg.role === "user" ? "user" : "model";
       const parts: any[] = [{ text: msg.content || "" }];
 
       // If this is the last user message and has images attached
-      if (i === messages.length - 1 && images && images.length > 0) {
+      if (i === validMessages.length - 1 && images && images.length > 0) {
         for (const img of images) {
           if (img.data) {
-            // Clean base64 header if present
             const cleanBase64 = img.data.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
             parts.unshift({
               inlineData: {
@@ -86,7 +91,16 @@ app.post("/api/chat", async (req, res) => {
         }
       }
 
-      contents.push({ role, parts });
+      // Merge consecutive identical roles
+      if (contents.length > 0 && contents[contents.length - 1].role === role) {
+        contents[contents.length - 1].parts.push(...parts);
+      } else {
+        contents.push({ role, parts });
+      }
+    }
+
+    if (contents.length === 0) {
+      contents.push({ role: "user", parts: [{ text: "مرحباً" }] });
     }
 
     // Config setup
@@ -108,17 +122,34 @@ app.post("/api/chat", async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    const responseStream = await ai.models.generateContentStream({
-      model: modelName,
-      contents,
-      config,
-    });
+    let streamSuccess = false;
+    let lastStreamError: any = null;
 
-    for await (const chunk of responseStream) {
-      const text = chunk.text;
-      if (text) {
-        res.write(`data: ${JSON.stringify({ text })}\n\n`);
+    for (const modelToTry of candidateModels) {
+      try {
+        const responseStream = await ai.models.generateContentStream({
+          model: modelToTry,
+          contents,
+          config,
+        });
+
+        for await (const chunk of responseStream) {
+          const text = chunk.text;
+          if (text) {
+            res.write(`data: ${JSON.stringify({ text })}\n\n`);
+          }
+        }
+        streamSuccess = true;
+        break;
+      } catch (err: any) {
+        console.warn(`Model ${modelToTry} stream failed:`, err?.message || err);
+        lastStreamError = err;
+        // Continue to fallback model
       }
+    }
+
+    if (!streamSuccess) {
+      throw lastStreamError || new Error("تعذر الحصول على رد من نماذج الذكاء الاصطناعي المتاحة.");
     }
 
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
