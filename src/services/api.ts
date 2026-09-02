@@ -101,13 +101,110 @@ export const getClientGenAI = (customKey?: string): GoogleGenAI => {
 };
 
 /**
+ * Centralized Arabic Error Translator (Prevents raw JSON / technical codes from leaking to UI)
+ */
+export const formatApiError = (err: any): string => {
+  if (!err) return 'حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.';
+
+  // Keep full technical details in debug logs
+  console.error('[API Error Debug Log]:', err);
+
+  let rawString = typeof err === 'string' ? err : err.message || JSON.stringify(err);
+
+  // Try to parse inner JSON string if embedded
+  try {
+    const jsonMatch = rawString.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.error?.message) {
+        rawString += ` ${parsed.error.message} ${parsed.error.status || ''} ${parsed.error.code || ''}`;
+      }
+    }
+  } catch {
+    // ignore parse error
+  }
+
+  const lower = rawString.toLowerCase();
+
+  // 1. Rate Limit / Quota Exceeded (429)
+  if (
+    lower.includes('429') ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('quota') ||
+    lower.includes('rate limit') ||
+    lower.includes('exceeded your current')
+  ) {
+    return 'تم تجاوز حد الاستخدام مؤقتًا (Rate Limit). انتظر قليلًا ثم حاول مرة أخرى.';
+  }
+
+  // 2. Model Not Found / Deprecated (404)
+  if (
+    lower.includes('404') ||
+    lower.includes('not_found') ||
+    lower.includes('no longer available') ||
+    lower.includes('is not found')
+  ) {
+    return 'موديل الذكاء الاصطناعي غير متاح حاليًا. جاري استخدام موديل بديل.';
+  }
+
+  // 3. Unauthorized / Invalid Key (401, 403)
+  if (
+    lower.includes('401') ||
+    lower.includes('403') ||
+    lower.includes('unauthenticated') ||
+    lower.includes('permission_denied') ||
+    lower.includes('api_key_invalid') ||
+    lower.includes('api key not valid') ||
+    lower.includes('invalid api key')
+  ) {
+    return 'مفتاح API أو صلاحيات المشروع غير صحيحة. يرجى مراجعة إعدادات المفتاح ⚙️.';
+  }
+
+  // 4. Bad Request (400)
+  if (lower.includes('400') || lower.includes('invalid_argument') || lower.includes('bad request')) {
+    return 'الطلب غير صالح. تحقق من البيانات المدخلة.';
+  }
+
+  // 5. Server Error (5xx)
+  if (
+    lower.includes('500') ||
+    lower.includes('502') ||
+    lower.includes('503') ||
+    lower.includes('504') ||
+    lower.includes('unavailable') ||
+    lower.includes('internal error')
+  ) {
+    return 'الخدمة غير متاحة مؤقتًا. حاول مرة أخرى.';
+  }
+
+  // 6. Network / Offline Error
+  if (
+    lower.includes('failed to fetch') ||
+    lower.includes('network') ||
+    lower.includes('load failed') ||
+    lower.includes('connection refused') ||
+    lower.includes('err_name_not_resolved') ||
+    lower.includes('offline')
+  ) {
+    return 'تعذر الاتصال بالإنترنت.';
+  }
+
+  // If already clean Arabic sentence
+  if (/[\u0600-\u06FF]/.test(rawString) && !rawString.includes('{') && !rawString.includes('code":')) {
+    return rawString;
+  }
+
+  return 'الخدمة غير متاحة مؤقتًا. حاول مرة أخرى.';
+};
+
+/**
  * Test Gemini API connection
  */
 export const testGeminiConnection = async (testKey?: string): Promise<{ success: boolean; message: string }> => {
   try {
     const ai = getClientGenAI(testKey);
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.7-flash',
       contents: 'مرحبا، تأكيد اتصال سريع.',
     });
     if (response.text) {
@@ -115,7 +212,7 @@ export const testGeminiConnection = async (testKey?: string): Promise<{ success:
     }
     return { success: false, message: 'لم يتم استلام نص من النموذج.' };
   } catch (err: any) {
-    return { success: false, message: err?.message || 'فشل الاتصال بمفتاح API المحدد.' };
+    return { success: false, message: formatApiError(err) };
   }
 };
 
@@ -124,23 +221,18 @@ export const testGeminiConnection = async (testKey?: string): Promise<{ success:
  */
 async function safeParseResponse(response: Response): Promise<any> {
   const contentType = response.headers.get('content-type') || '';
-  const text = await response.text();
-
-  if (!contentType.includes('application/json') && text.trim().startsWith('<')) {
-    if (!response.ok) {
-      throw new Error(`خطأ في الخادم (رمز الحالة ${response.status}). يرجى التحقق من اتصالك.`);
-    }
-    throw new Error('استجاب الخادم بصفحة ويب بدلاً من البيانات المطلوبة.');
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`HTTP ${response.status}: ${errorText}`);
   }
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    if (!response.ok) {
-      throw new Error(`خطأ في الاستجابة (${response.status}): ${text.slice(0, 100)}`);
-    }
-    throw new Error('تعذر معالجة استجابة الخادم.');
+  if (!contentType.includes('application/json')) {
+    const text = await response.text();
+    throw new Error(`استجاب الخادم بنوع غير متوقع: ${text.slice(0, 150)}`);
   }
+
+  return response.json();
 }
 
 // System Prompts for different Modes
@@ -159,7 +251,13 @@ const getSystemInstruction = (mode: ChatMode): string => {
   }
 };
 
+// Video in-flight lock to prevent concurrent Veo calls that trigger 429
+let isVeoRequestInFlight = false;
+
 export const apiService = {
+  // Helper exposed for UI
+  formatError: formatApiError,
+
   // 1. STREAM CHAT
   streamChat: async (
     messages: ChatMessage[],
@@ -232,7 +330,9 @@ export const apiService = {
     // Direct Client-Side Gemini Execution (Capacitor Native or Backend Fallback)
     try {
       const ai = getClientGenAI();
-      const modelName = 'gemini-2.5-flash';
+      const candidateModels = mode === 'deep' 
+        ? ['gemini-3.1-pro-preview', 'gemini-3.7-flash', 'gemini-3.1-flash-lite']
+        : ['gemini-3.7-flash', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview'];
       const systemInstruction = getSystemInstruction(mode);
 
       // Build contents array
@@ -285,21 +385,38 @@ export const apiService = {
         config.tools = [{ googleSearch: {} }];
       }
 
-      const streamResult = await ai.models.generateContentStream({
-        model: modelName,
-        contents,
-        config,
-      });
+      let streamSuccess = false;
+      let lastStreamError: any = null;
 
-      for await (const chunk of streamResult) {
-        if (chunk.text) {
-          callbacks.onChunk(chunk.text);
+      for (const modelToTry of candidateModels) {
+        try {
+          const streamResult = await ai.models.generateContentStream({
+            model: modelToTry,
+            contents,
+            config,
+          });
+
+          for await (const chunk of streamResult) {
+            if (chunk.text) {
+              callbacks.onChunk(chunk.text);
+            }
+          }
+          streamSuccess = true;
+          break;
+        } catch (mErr: any) {
+          console.warn(`Model ${modelToTry} failed during stream:`, mErr);
+          lastStreamError = mErr;
         }
       }
-      callbacks.onDone();
+
+      if (streamSuccess) {
+        callbacks.onDone();
+      } else {
+        throw lastStreamError || new Error('تعذر إنشاء المحادثة');
+      }
     } catch (directErr: any) {
       console.error('Direct Gemini stream error:', directErr);
-      callbacks.onError(directErr.message || 'تعذر الاتصال بـ Gemini API.');
+      callbacks.onError(formatApiError(directErr));
     }
   },
 
@@ -370,9 +487,10 @@ export const apiService = {
       }
       parts.push({ text: enhancedPrompt });
 
-      const candidateModels = ['gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image'];
+      const candidateModels = ['gemini-3.1-flash-lite-image', 'gemini-3.1-flash-image'];
       let imageUrl: string | null = null;
       let description = '';
+      let lastModelError: any = null;
 
       for (const modelName of candidateModels) {
         try {
@@ -402,8 +520,9 @@ export const apiService = {
           }
 
           if (imageUrl) break;
-        } catch (modelErr) {
+        } catch (modelErr: any) {
           console.warn(`Model ${modelName} direct attempt failed:`, modelErr);
+          lastModelError = modelErr;
         }
       }
 
@@ -417,43 +536,57 @@ export const apiService = {
         };
       }
 
-      throw new Error(description || 'لم يتم استرجاع بيانات صورة صالحة من النموذج.');
+      if (lastModelError) {
+        throw new Error(formatApiError(lastModelError));
+      }
+
+      throw new Error('لم يتم استرجاع بيانات صورة صالحة من النموذج.');
     } catch (directErr: any) {
       console.error('Direct image generation error:', directErr);
-      throw new Error(directErr.message || 'تعذر إنشاء الصورة.');
+      throw new Error(formatApiError(directErr));
     }
   },
 
-  // 3. GENERATE VEO VIDEO
+  // 3. GENERATE VEO VIDEO (with Rate Limit / Concurrency guard)
   generateVeoVideo: async (
     prompt: string,
     aspectRatio: '16:9' | '9:16' = '16:9',
     resolution: '720p' | '1080p' = '720p',
     image?: string | null
   ) => {
-    const baseUrl = getApiBaseUrl();
-
-    if (baseUrl) {
-      try {
-        const response = await fetch(`${baseUrl}/api/generate-video`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify({ prompt, aspectRatio, resolution, image }),
-        });
-        const data = await safeParseResponse(response);
-        if (response.ok && data.success) return data;
-      } catch (backendErr) {
-        console.warn('Backend Veo video request failed, falling back to direct GenAI client:', backendErr);
-      }
+    if (isVeoRequestInFlight) {
+      throw new Error('يوجد طلب إنشاء فيديو قيد المعالجة حالياً. يرجى الانتظار حتى اكتماله لتفادي تجاوز حد الاستخدام.');
     }
 
-    // Direct Veo Video Generation Request
+    isVeoRequestInFlight = true;
+    const baseUrl = getApiBaseUrl();
+
     try {
+      if (baseUrl) {
+        try {
+          const response = await fetch(`${baseUrl}/api/generate-video`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ prompt, aspectRatio, resolution, image }),
+          });
+          const data = await safeParseResponse(response);
+          if (response.ok && data.success) {
+            isVeoRequestInFlight = false;
+            return data;
+          }
+        } catch (backendErr) {
+          console.warn('Backend Veo video request failed, falling back to direct GenAI client:', backendErr);
+        }
+      }
+
+      // Direct Veo Video Generation Request
       const ai = getClientGenAI();
       const modelName = 'veo-3.1-lite-generate-preview';
 
       const config: any = {
+        numberOfVideos: 1,
         aspectRatio,
+        resolution: resolution === '1080p' ? '1080p' : '720p',
       };
 
       let imagePayload: any = undefined;
@@ -474,18 +607,20 @@ export const apiService = {
         config,
       });
 
+      isVeoRequestInFlight = false;
       return {
         success: true,
         operationName: operation.name || (operation as any).name,
         message: 'تم بدء معالجة الفيديو بنجاح عبر نموذج Google Veo 3.1',
       };
     } catch (directErr: any) {
+      isVeoRequestInFlight = false;
       console.error('Direct Veo video generation error:', directErr);
-      throw new Error(directErr.message || 'فشل طلب توليد الفيديو عبر نموذج Veo 3.1');
+      throw new Error(formatApiError(directErr));
     }
   },
 
-  // 4. CHECK VEO VIDEO STATUS (POLLING)
+  // 4. CHECK VEO VIDEO STATUS (POLLING with Safe Extraction)
   checkVideoStatus: async (operationName: string) => {
     const baseUrl = getApiBaseUrl();
 
@@ -520,33 +655,40 @@ export const apiService = {
       if (error) {
         return {
           done: true,
-          error: error.message || 'فشلت معالجة الفيديو من مزود Veo',
+          error: { message: formatApiError(error) },
         };
       }
 
       if (isDone) {
         const generatedVideos = (opResult.response as any)?.generatedVideos;
         const videoObj = generatedVideos?.[0]?.video;
-        const videoUri = videoObj?.uri;
+        let finalVideoUrl: string | null = null;
 
-        const apiKey = getStoredApiKey();
-        const authenticatedUrl = videoUri ? `${videoUri}?key=${apiKey}` : undefined;
+        if (videoObj?.videoBytes) {
+          finalVideoUrl = `data:video/mp4;base64,${videoObj.videoBytes}`;
+        } else if (videoObj?.uri) {
+          const apiKey = getStoredApiKey();
+          finalVideoUrl = videoObj.uri.includes('?') 
+            ? `${videoObj.uri}&key=${apiKey}` 
+            : `${videoObj.uri}?key=${apiKey}`;
+        }
 
         return {
           done: true,
-          videoUrl: authenticatedUrl || videoUri,
-          downloadUrl: authenticatedUrl || videoUri,
+          videoUrl: finalVideoUrl,
+          downloadUrl: finalVideoUrl,
+          filename: `Veo_Video_${Date.now()}.mp4`,
         };
       }
 
       return {
         done: false,
-        progress: 45,
+        progress: 50,
         statusMessage: 'جاري معالجة الإطارات السينمائية بواسطة Veo 3.1...',
       };
     } catch (directErr: any) {
       console.error('Direct check video status error:', directErr);
-      throw new Error(directErr.message || 'فشل التحقق من حالة الفيديو');
+      throw new Error(formatApiError(directErr));
     }
   },
 
@@ -581,7 +723,7 @@ export const apiService = {
 }`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.7-flash',
         contents: prompt,
         config: {
           systemInstruction,
@@ -650,7 +792,7 @@ export const apiService = {
 }`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.7-flash',
         contents: `الموضوع: ${topic} | المدة: ${duration} | الجمهور: ${targetAudience}`,
         config: {
           systemInstruction,
@@ -666,7 +808,7 @@ export const apiService = {
       };
     } catch (directErr: any) {
       console.error('Direct storyboard generation error:', directErr);
-      throw new Error(directErr.message || 'فشل كتابة سيناريو الفيديو');
+      throw new Error(formatApiError(directErr));
     }
   },
 
@@ -699,3 +841,4 @@ export const apiService = {
     throw new Error('خدمة تحويل النص إلى صوت غير مدعومة في هذا الجهاز.');
   },
 };
+
