@@ -253,14 +253,25 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
       if (res.success && res.operationName) {
         setVeoStatusMessage('جاري محاكاة وحساب حركة الكاميرا والإضاءة الفيزيائية...');
 
-        // Poll for video generation completion
+        // Poll for video generation completion (Veo 3.1 long-running operation)
         let attempts = 0;
-        const maxAttempts = 30; // 30 * 4s = 2 minutes
+        const maxAttempts = 40; // 40 * 7s = ~4.5 minutes safe polling window
 
         const pollInterval = setInterval(async () => {
           attempts++;
           try {
             const statusRes = await apiService.checkVideoStatus(res.operationName);
+
+            // If operation returned an explicit error, stop polling and show user-friendly message
+            if (statusRes.error) {
+              clearInterval(pollInterval);
+              setIsGeneratingVeo(false);
+              const errMsg = typeof statusRes.error === 'string' 
+                ? statusRes.error 
+                : statusRes.error.message || 'حدث خطأ أثناء معالجة الفيديو';
+              setVeoStatusMessage(`خطأ: ${errMsg}`);
+              return;
+            }
 
             if (statusRes.done) {
               clearInterval(pollInterval);
@@ -285,26 +296,15 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
                 setSavedVideos(storageService.getVideos());
                 setVeoStatusMessage('✓ تم توليد الفيديو بنجاح بواسطة Veo 3.1! جاهز للمشاهدة والتنزيل.');
               } else {
-                // In case API completed without direct URL, use fallback demo video for seamless testing
-                const fallbackVideo: GeneratedVideo = {
-                  id: `vid-${Date.now()}`,
-                  url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-                  prompt: veoPrompt,
-                  aspectRatio: veoAspectRatio,
-                  resolution: veoResolution,
-                  createdAt: new Date().toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' }),
-                  duration: '15s',
-                };
-                setCurrentVideo(fallbackVideo);
-                storageService.saveVideo(fallbackVideo);
-                setSavedVideos(storageService.getVideos());
-                setVeoStatusMessage('✓ تم تجهيز الفيديو بنجاح بدقة عالية!');
+                setVeoStatusMessage('اكتملت العملية ولكن لم يتم استرجاع رابط الفيديو. يرجى المحاولة لاحقاً.');
               }
             } else {
-              if (attempts % 2 === 0) {
+              if (attempts % 3 === 0) {
                 setVeoStatusMessage('جاري ريندر الإطارات السينمائية وحفظ ملف MP4...');
+              } else if (attempts % 3 === 1) {
+                setVeoStatusMessage('جاري محاكاة حركة الكاميرا والفيزياء بالذكاء الاصطناعي...');
               } else {
-                setVeoStatusMessage('جاري تجميع الفيديو وضبط ألوان المشهد بالذكاء الاصطناعي...');
+                setVeoStatusMessage('جاري تجميع وضبط المشهد بجودة سينمائية عالية...');
               }
 
               if (attempts >= maxAttempts) {
@@ -315,29 +315,14 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
             }
           } catch (e: any) {
             console.error('Polling error:', e);
-            if (attempts >= maxAttempts) {
-              clearInterval(pollInterval);
-              setIsGeneratingVeo(false);
-              setVeoStatusMessage(`ملاحظة: ${e.message || 'حدث خطأ أثناء فحص حالة الفيديو'}`);
-            }
+            clearInterval(pollInterval);
+            setIsGeneratingVeo(false);
+            setVeoStatusMessage(`خطأ: ${e.message || 'حدث خطأ أثناء فحص حالة الفيديو'}`);
           }
-        }, 4000);
+        }, 7000);
       } else {
-        // Direct completion or simulated video
         setIsGeneratingVeo(false);
-        const fallbackVideo: GeneratedVideo = {
-          id: `vid-${Date.now()}`,
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-          prompt: veoPrompt,
-          aspectRatio: veoAspectRatio,
-          resolution: veoResolution,
-          createdAt: new Date().toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' }),
-          duration: '15s',
-        };
-        setCurrentVideo(fallbackVideo);
-        storageService.saveVideo(fallbackVideo);
-        setSavedVideos(storageService.getVideos());
-        setVeoStatusMessage('✓ تم توليد وتجهيز الفيديو بنجاح!');
+        setVeoStatusMessage('تعذر بدء عملية توليد الفيديو عبر نموذج Veo 3.1.');
       }
     } catch (err: any) {
       setIsGeneratingVeo(false);

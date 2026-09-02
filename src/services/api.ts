@@ -103,7 +103,7 @@ export const getClientGenAI = (customKey?: string): GoogleGenAI => {
 /**
  * Centralized Arabic Error Translator (Prevents raw JSON / technical codes from leaking to UI)
  */
-export const formatApiError = (err: any): string => {
+export const formatApiError = (err: any, context?: 'video' | 'image' | 'chat'): string => {
   if (!err) return 'حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.';
 
   // Keep full technical details in debug logs
@@ -126,15 +126,19 @@ export const formatApiError = (err: any): string => {
 
   const lower = rawString.toLowerCase();
 
-  // 1. Rate Limit / Quota Exceeded (429)
+  // 1. Rate Limit / Quota Exceeded / Billing (429)
   if (
     lower.includes('429') ||
     lower.includes('resource_exhausted') ||
     lower.includes('quota') ||
     lower.includes('rate limit') ||
+    lower.includes('billing') ||
     lower.includes('exceeded your current')
   ) {
-    return 'تم تجاوز حد الاستخدام مؤقتًا (Rate Limit). انتظر قليلًا ثم حاول مرة أخرى.';
+    if (context === 'video' || lower.includes('video') || lower.includes('veo')) {
+      return 'تم تجاوز حد الاستخدام أو تحتاج خدمة الفيديو إلى تفعيل الفوترة في مشروع Google Cloud المرتبط بالـ API.';
+    }
+    return 'تم تجاوز حد الاستخدام مؤقتًا. انتظر قليلًا ثم حاول مرة أخرى أو تحقق من تفعيل الفوترة في مشروع Google Cloud.';
   }
 
   // 2. Model Not Found / Deprecated (404)
@@ -189,7 +193,7 @@ export const formatApiError = (err: any): string => {
     return 'تعذر الاتصال بالإنترنت.';
   }
 
-  // If already clean Arabic sentence
+  // If already clean Arabic text
   if (/[\u0600-\u06FF]/.test(rawString) && !rawString.includes('{') && !rawString.includes('code":')) {
     return rawString;
   }
@@ -487,16 +491,19 @@ export const apiService = {
       }
       parts.push({ text: enhancedPrompt });
 
-      const candidateModels = ['gemini-3.1-flash-lite-image', 'gemini-3.1-flash-image'];
+      const candidateModels = ['gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image'];
       let imageUrl: string | null = null;
       let description = '';
       let lastModelError: any = null;
 
       for (const modelName of candidateModels) {
         try {
+          const validRatios = ['1:1', '3:4', '4:3', '9:16', '16:9', '1:4', '1:8', '4:1', '8:1'];
+          const chosenRatio = validRatios.includes(aspectRatio) ? aspectRatio : '1:1';
+          
           const config: any = {
             imageConfig: {
-              aspectRatio: aspectRatio as any,
+              aspectRatio: chosenRatio as any,
             },
           };
           if (modelName === 'gemini-3.1-flash-image') {
@@ -509,13 +516,19 @@ export const apiService = {
             config,
           });
 
-          if (response.candidates?.[0]?.content?.parts) {
-            for (const part of response.candidates[0].content.parts) {
-              if (part.inlineData) {
-                imageUrl = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
-              } else if (part.text) {
-                description += part.text;
+          if (response.candidates) {
+            for (const candidate of response.candidates) {
+              if (candidate.content?.parts) {
+                for (const part of candidate.content.parts) {
+                  if (part.inlineData?.data) {
+                    imageUrl = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+                    break;
+                  } else if (part.text) {
+                    description += part.text;
+                  }
+                }
               }
+              if (imageUrl) break;
             }
           }
 
@@ -537,13 +550,13 @@ export const apiService = {
       }
 
       if (lastModelError) {
-        throw new Error(formatApiError(lastModelError));
+        throw new Error(formatApiError(lastModelError, 'image'));
       }
 
       throw new Error('لم يتم استرجاع بيانات صورة صالحة من النموذج.');
     } catch (directErr: any) {
       console.error('Direct image generation error:', directErr);
-      throw new Error(formatApiError(directErr));
+      throw new Error(formatApiError(directErr, 'image'));
     }
   },
 
@@ -581,7 +594,11 @@ export const apiService = {
 
       // Direct Veo Video Generation Request
       const ai = getClientGenAI();
-      const modelName = 'veo-3.1-lite-generate-preview';
+      const candidateModels = [
+        'veo-3.1-fast-generate-preview',
+        'veo-3.1-lite-generate-preview',
+        'veo-3.1-generate-preview',
+      ];
 
       const config: any = {
         numberOfVideos: 1,
@@ -600,12 +617,30 @@ export const apiService = {
         }
       }
 
-      const operation = await ai.models.generateVideos({
-        model: modelName,
-        prompt,
-        image: imagePayload,
-        config,
-      });
+      let operation: any = null;
+      let lastVeoErr: any = null;
+
+      for (const modelName of candidateModels) {
+        try {
+          operation = await ai.models.generateVideos({
+            model: modelName,
+            prompt,
+            image: imagePayload,
+            config,
+          });
+
+          if (operation && (operation.name || (operation as any).name)) {
+            break;
+          }
+        } catch (err: any) {
+          console.warn(`Veo model ${modelName} direct attempt failed:`, err);
+          lastVeoErr = err;
+        }
+      }
+
+      if (!operation || (!operation.name && !(operation as any).name)) {
+        throw lastVeoErr || new Error('تعذر بدء توليد الفيديو');
+      }
 
       isVeoRequestInFlight = false;
       return {
@@ -616,7 +651,7 @@ export const apiService = {
     } catch (directErr: any) {
       isVeoRequestInFlight = false;
       console.error('Direct Veo video generation error:', directErr);
-      throw new Error(formatApiError(directErr));
+      throw new Error(formatApiError(directErr, 'video'));
     }
   },
 
@@ -655,7 +690,7 @@ export const apiService = {
       if (error) {
         return {
           done: true,
-          error: { message: formatApiError(error) },
+          error: { message: formatApiError(error, 'video') },
         };
       }
 

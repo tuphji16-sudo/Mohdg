@@ -230,6 +230,7 @@ app.post("/api/generate-image", async (req, res) => {
 
     parts.push({ text: enhancedPrompt });
 
+    // Primary: gemini-3.1-flash-image, Fallback: gemini-3.1-flash-lite-image
     const candidateImageModels = ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"];
     let imageUrl: string | null = null;
     let description: string = "";
@@ -237,16 +238,16 @@ app.post("/api/generate-image", async (req, res) => {
 
     for (const modelName of candidateImageModels) {
       try {
-        const config: any = {};
+        const validRatios = ["1:1", "3:4", "4:3", "9:16", "16:9", "1:4", "1:8", "4:1", "8:1"];
+        const chosenRatio = validRatios.includes(aspectRatio) ? aspectRatio : "1:1";
+        
+        const config: any = {
+          imageConfig: {
+            aspectRatio: chosenRatio as any,
+          },
+        };
         if (modelName === "gemini-3.1-flash-image") {
-          config.imageConfig = {
-            aspectRatio: aspectRatio as any,
-            imageSize: "1K",
-          };
-        } else {
-          config.imageConfig = {
-            aspectRatio: aspectRatio as any,
-          };
+          config.imageConfig.imageSize = "1K";
         }
 
         const response = await ai.models.generateContent({
@@ -255,13 +256,20 @@ app.post("/api/generate-image", async (req, res) => {
           config,
         });
 
-        if (response.candidates?.[0]?.content?.parts) {
-          for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData) {
-              imageUrl = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
-            } else if (part.text) {
-              description += part.text;
+        if (response.candidates) {
+          for (const candidate of response.candidates) {
+            if (candidate.content?.parts) {
+              for (const part of candidate.content.parts) {
+                if (part.inlineData?.data) {
+                  const mimeType = part.inlineData.mimeType || "image/png";
+                  imageUrl = `data:${mimeType};base64,${part.inlineData.data}`;
+                  break;
+                } else if (part.text) {
+                  description += part.text;
+                }
+              }
             }
+            if (imageUrl) break;
           }
         }
 
@@ -276,6 +284,14 @@ app.post("/api/generate-image", async (req, res) => {
 
     if (!imageUrl) {
       if (lastImageError) {
+        const errMsg = lastImageError.message || String(lastImageError);
+        const lower = errMsg.toLowerCase();
+        if (lower.includes("429") || lower.includes("quota") || lower.includes("resource_exhausted")) {
+          return res.status(429).json({
+            error: "تم تجاوز حد استخدام توليد الصور مؤقتاً. يرجى الانتظار قليلاً أو مراجعة الحساب.",
+            details: errMsg,
+          });
+        }
         return res.status(500).json({
           error: lastImageError.message || "تعذر إنشاء الصورة من مزود الذكاء الاصطناعي.",
         });
@@ -289,7 +305,8 @@ app.post("/api/generate-image", async (req, res) => {
       success: true,
       imageUrl,
       description,
-      prompt: enhancedPrompt,
+      prompt,
+      enhancedPrompt,
       aspectRatio,
       style,
       createdAt: new Date().toISOString(),
@@ -371,7 +388,7 @@ app.post("/api/video-storyboard", async (req, res) => {
   }
 });
 
-// 5. Veo Video Generation (3-step pattern)
+// 5. Veo Video Generation (3-step pattern with Fast & Lite fallback)
 app.post("/api/generate-video", async (req, res) => {
   try {
     const {
@@ -385,33 +402,86 @@ app.post("/api/generate-video", async (req, res) => {
       return res.status(400).json({ error: "يجب تقديم وصف أو صورة لبدء إنشاء الفيديو" });
     }
 
-    const payload: any = {
-      model: "veo-3.1-lite-generate-preview",
-      config: {
-        numberOfVideos: 1,
-        resolution: resolution === "1080p" ? "1080p" : "720p",
-        aspectRatio: aspectRatio === "9:16" ? "9:16" : "16:9",
-      },
-    };
-
-    if (prompt) payload.prompt = prompt;
-
-    if (image) {
-      const cleanBase64 = image.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
-      payload.image = {
-        imageBytes: cleanBase64,
-        mimeType: "image/png",
-      };
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({
+        error: "مفتاح Gemini API غير مهيأ في السيرفر.",
+      });
     }
 
-    const operation = await ai.models.generateVideos(payload);
+    const candidateVideoModels = [
+      "veo-3.1-fast-generate-preview",
+      "veo-3.1-lite-generate-preview",
+      "veo-3.1-generate-preview",
+    ];
+
+    let operation: any = null;
+    let lastVideoError: any = null;
+
+    for (const modelName of candidateVideoModels) {
+      try {
+        const payload: any = {
+          model: modelName,
+          config: {
+            numberOfVideos: 1,
+            resolution: resolution === "1080p" ? "1080p" : "720p",
+            aspectRatio: aspectRatio === "9:16" ? "9:16" : "16:9",
+          },
+        };
+
+        if (prompt) payload.prompt = prompt;
+
+        if (image) {
+          const cleanBase64 = image.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
+          payload.image = {
+            imageBytes: cleanBase64,
+            mimeType: "image/png",
+          };
+        }
+
+        operation = await ai.models.generateVideos(payload);
+        if (operation && (operation.name || operation.operation?.name)) {
+          break;
+        }
+      } catch (err: any) {
+        console.warn(`Veo model ${modelName} initiation failed:`, err?.message || err);
+        lastVideoError = err;
+      }
+    }
+
+    if (!operation || (!operation.name && !operation.operation?.name)) {
+      if (lastVideoError) {
+        const errMsg = lastVideoError.message || String(lastVideoError);
+        const lower = errMsg.toLowerCase();
+        if (lower.includes("429") || lower.includes("quota") || lower.includes("resource_exhausted") || lower.includes("billing")) {
+          return res.status(429).json({
+            error: "تم تجاوز حد الاستخدام أو تحتاج خدمة الفيديو إلى تفعيل الفوترة في مشروع Google Cloud المرتبط بالـ API.",
+            details: errMsg,
+          });
+        }
+        return res.status(500).json({
+          error: lastVideoError.message || "فشل طلب توليد الفيديو عبر نموذج Veo 3.1",
+          details: errMsg,
+        });
+      }
+      return res.status(500).json({ error: "فشل طلب توليد الفيديو عبر نموذج Veo 3.1" });
+    }
+
+    const opName = operation.name || operation.operation?.name;
 
     res.json({
       success: true,
-      operationName: operation.name,
+      operationName: opName,
     });
   } catch (error: any) {
     console.error("Generate video error:", error);
+    const errMsg = error.message || String(error);
+    const lower = errMsg.toLowerCase();
+    if (lower.includes("429") || lower.includes("quota") || lower.includes("resource_exhausted") || lower.includes("billing")) {
+      return res.status(429).json({
+        error: "تم تجاوز حد الاستخدام أو تحتاج خدمة الفيديو إلى تفعيل الفوترة في مشروع Google Cloud المرتبط بالـ API.",
+        details: errMsg,
+      });
+    }
     res.status(500).json({
       error: error.message || "حدث خطأ أثناء طلب توليد الفيديو",
     });
@@ -429,6 +499,19 @@ app.post("/api/video-status", async (req, res) => {
     // Reconstruct operation instance
     const op: any = { name: operationName };
     const updated = await ai.operations.getVideosOperation({ operation: op as any });
+
+    if (updated.error) {
+      const errMsg = (updated.error as any).message || JSON.stringify(updated.error);
+      const lower = errMsg.toLowerCase();
+      let arabicErr = "حدث خطأ أثناء معالجة الفيديو في خوادم Veo.";
+      if (lower.includes("429") || lower.includes("quota") || lower.includes("resource_exhausted") || lower.includes("billing")) {
+        arabicErr = "تم تجاوز حد الاستخدام أو تحتاج خدمة الفيديو إلى تفعيل الفوترة في مشروع Google Cloud المرتبط بالـ API.";
+      }
+      return res.json({
+        done: true,
+        error: { message: arabicErr, details: errMsg },
+      });
+    }
 
     let videoUrl: string | null = null;
     let rawUri: string | null = null;
@@ -451,7 +534,7 @@ app.post("/api/video-status", async (req, res) => {
 
     res.json({
       done: updated.done,
-      error: updated.error || null,
+      error: null,
       response: updated.response || null,
       videoUrl: videoUrl,
       rawUri: rawUri,
@@ -462,6 +545,14 @@ app.post("/api/video-status", async (req, res) => {
     });
   } catch (error: any) {
     console.error("Video status polling error:", error);
+    const errMsg = error.message || String(error);
+    const lower = errMsg.toLowerCase();
+    if (lower.includes("429") || lower.includes("quota") || lower.includes("resource_exhausted") || lower.includes("billing")) {
+      return res.status(429).json({
+        error: "تم تجاوز حد الاستخدام أو تحتاج خدمة الفيديو إلى تفعيل الفوترة في مشروع Google Cloud المرتبط بالـ API.",
+        details: errMsg,
+      });
+    }
     res.status(500).json({
       error: error.message || "حدث خطأ أثناء فحص حالة الفيديو",
     });
